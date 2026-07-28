@@ -17,8 +17,15 @@ scripts/setup-secrets.sh /path/to/developer-id.p12
 
 ## Run
 
-Use **Actions → Notarize macOS release → Run workflow**, or dispatch and
-download the result locally:
+Run locally with the installed Developer ID certificate and the existing
+`OpenWritr` notarytool keychain profile:
+
+```bash
+scripts/local.sh md2loop v1.0.2
+```
+
+To use GitHub Actions, choose **Actions → Notarize macOS release → Run
+workflow**, or dispatch and download the result:
 
 ```bash
 scripts/request.sh md2loop v1.0.2
