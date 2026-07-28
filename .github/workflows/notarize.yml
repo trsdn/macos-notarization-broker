@@ -1,0 +1,162 @@
+name: Notarize macOS release
+
+on:
+  workflow_dispatch:
+    inputs:
+      app:
+        description: Application profile
+        required: true
+        type: choice
+        options:
+          - md2loop
+          - openwritr
+          - ptionsplus
+      tag:
+        description: Existing release tag, for example v1.0.2
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: notarize-${{ inputs.app }}
+  cancel-in-progress: false
+
+jobs:
+  notarize:
+    runs-on: macos-latest
+    timeout-minutes: 90
+    steps:
+      - name: Resolve fixed application profile
+        id: profile
+        env:
+          APP: ${{ inputs.app }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]] || {
+            echo "Tag must be an exact version tag such as v1.0.2."
+            exit 1
+          }
+          case "$APP" in
+            md2loop) repo="trsdn/md2loop" ;;
+            openwritr) repo="trsdn/OpenWritr" ;;
+            ptionsplus) repo="trsdn/PtionsPlus" ;;
+            *) exit 1 ;;
+          esac
+          echo "repo=$repo" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Check out exact source tag
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.profile.outputs.repo }}
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Import Developer ID certificate
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+        run: |
+          set -euo pipefail
+          [[ -n "$MACOS_CERTIFICATE" && -n "$MACOS_CERTIFICATE_PWD" ]] || {
+            echo "The broker certificate secrets are not configured."
+            exit 1
+          }
+          cert_file="$(mktemp "${RUNNER_TEMP}/certificate.XXXXXX")"
+          keychain_file="${RUNNER_TEMP}/notarization.keychain-db"
+          keychain_password="$(openssl rand -base64 32)"
+          printf '%s' "$MACOS_CERTIFICATE" | base64 --decode > "$cert_file"
+          security create-keychain -p "$keychain_password" "$keychain_file"
+          security set-keychain-settings -lut 21600 "$keychain_file"
+          security unlock-keychain -p "$keychain_password" "$keychain_file"
+          security import "$cert_file" -P "$MACOS_CERTIFICATE_PWD" -A -t cert -f pkcs12 -k "$keychain_file"
+          security set-key-partition-list -S apple-tool:,apple: -k "$keychain_password" "$keychain_file"
+          user_keychains=()
+          while IFS= read -r existing_keychain; do
+            existing_keychain="${existing_keychain#*\"}"
+            existing_keychain="${existing_keychain%\"*}"
+            [[ -n "$existing_keychain" ]] && user_keychains+=("$existing_keychain")
+          done < <(security list-keychains -d user)
+          security list-keychains -d user -s "$keychain_file" "${user_keychains[@]}"
+          identity="$(security find-identity -v -p codesigning "$keychain_file" | awk -F'"' '/Developer ID Application/ { print $2; exit }')"
+          [[ -n "$identity" ]] || {
+            echo "Developer ID Application identity not found."
+            exit 1
+          }
+          {
+            echo "CODE_SIGN_IDENTITY=$identity"
+            echo "OPENWRITR_SIGNING_IDENTITY=$identity"
+            echo "KEYCHAIN_FILE=$keychain_file"
+          } >> "$GITHUB_ENV"
+          rm -f "$cert_file"
+
+      - name: Build, sign, and notarize
+        env:
+          APP: ${{ inputs.app }}
+          TAG: ${{ inputs.tag }}
+          VERSION: ${{ steps.profile.outputs.version }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_VERSION: ${{ steps.profile.outputs.version }}
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: |
+          set -euo pipefail
+          [[ -n "$APPLE_ID" && -n "$APPLE_TEAM_ID" && -n "$APPLE_APP_PASSWORD" ]] || {
+            echo "The broker Apple notarization secrets are not configured."
+            exit 1
+          }
+          chmod +x scripts/*.sh
+          case "$APP" in
+            md2loop)
+              brew install xcodegen
+              DMG_PATH="dist/md2loop-${VERSION}-macos.dmg" scripts/release_macos.sh
+              ;;
+            openwritr)
+              scripts/release_macos.sh "$TAG"
+              ;;
+            ptionsplus)
+              scripts/sign-release.sh
+              scripts/notarize.sh
+              ;;
+          esac
+
+      - name: Collect release artifacts
+        env:
+          APP: ${{ inputs.app }}
+          VERSION: ${{ steps.profile.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir broker-output
+          case "$APP" in
+            md2loop)
+              cp "dist/md2loop-${VERSION}-macos.dmg"{,.sha256} broker-output/
+              ;;
+            openwritr)
+              cp "dist/OpenWritr-v${VERSION}-macOS-arm64."{zip,zip.sha256,dmg,dmg.sha256} broker-output/
+              ;;
+            ptionsplus)
+              cp "dist/Ptions+.zip" "dist/Ptions+.dmg" "dist/Ptions+.dmg.sha256" broker-output/
+              ;;
+          esac
+
+      - name: Remove temporary keychain
+        if: always()
+        run: |
+          if [[ -n "${KEYCHAIN_FILE:-}" ]]; then
+            security delete-keychain "$KEYCHAIN_FILE" 2>/dev/null || true
+          fi
+
+      - name: Upload notarized artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.app }}-${{ steps.profile.outputs.version }}
+          path: broker-output/
+          if-no-files-found: error
+          retention-days: 7
