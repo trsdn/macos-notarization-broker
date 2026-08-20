@@ -108,6 +108,52 @@
           "name": "Teleprompter-Mirror-v{version}-macOS-arm64.zip"
         }
       ]
+    },
+    "spacemender": {
+      "repository": "trsdn/SpaceMender",
+      "repository_id": 1339151393,
+      "build_adapter": "spacemender-xcode",
+      "team_id": "G69Z5BNY97",
+      "bundle_name": "SpaceMender.app",
+      "bundle_identifier": "app.spacemender.SpaceMender",
+      "bundle_display_name": "SpaceMender",
+      "executable": "SpaceMender",
+      "package_type": "APPL",
+      "architectures": [
+        "arm64"
+      ],
+      "minimum_system_version": "14.0",
+      "entitlements": "entitlements/spacemender.plist",
+      "nested_executables": [
+        {
+          "path": "Contents/MacOS/SpaceMenderDefenderHelper",
+          "identifier": "app.spacemender.SpaceMender.DefenderHelper",
+          "entitlements": "entitlements/spacemender-defender-helper.plist",
+          "embedded_info_plist": {
+            "CFBundleIdentifier": "{identifier}",
+            "CFBundlePackageType": "XPC!",
+            "SpaceMenderAuthorizedClientRequirement": "anchor apple generic and identifier \"{bundle_identifier}\" and certificate leaf[subject.OU] = \"{team_id}\""
+          },
+          "launch_daemon": {
+            "path": "Contents/Library/LaunchDaemons/app.spacemender.SpaceMender.DefenderHelper.plist",
+            "label": "app.spacemender.SpaceMender.DefenderHelper"
+          }
+        }
+      ],
+      "dmg_volume_name": "SpaceMender",
+      "max_archive_bytes": 1073741824,
+      "max_uncompressed_bytes": 2147483648,
+      "max_files": 5000,
+      "artifacts": [
+        {
+          "type": "zip",
+          "name": "SpaceMender-v{version}-macOS-arm64.zip"
+        },
+        {
+          "type": "dmg",
+          "name": "SpaceMender-v{version}-macOS-arm64.dmg"
+        }
+      ]
     }
   }
 }
