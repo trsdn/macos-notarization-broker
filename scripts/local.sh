@@ -11,8 +11,9 @@ case "$app" in
   md2loop) repository="trsdn/md2loop" ;;
   openwritr) repository="trsdn/OpenWritr" ;;
   ptionsplus) repository="trsdn/PtionsPlus" ;;
+  teleprompter) repository="trsdn/teleprompter-mirror-macos" ;;
   *)
-    echo "Usage: $0 {md2loop|openwritr|ptionsplus} vX.Y.Z [output-directory]" >&2
+    echo "Usage: $0 {md2loop|openwritr|ptionsplus|teleprompter} vX.Y.Z [output-directory]" >&2
     exit 1
     ;;
 esac
@@ -105,6 +106,22 @@ case "$app" in
     scripts/sign-release.sh
     scripts/notarize.sh
     cp "dist/Ptions+.zip" "dist/Ptions+.dmg" "dist/Ptions+.dmg.sha256" "$output/"
+    ;;
+  teleprompter)
+    ./build-app.sh
+    app_path="dist/Teleprompter Mirror.app"
+    submission_zip="$work_dir/Teleprompter-Mirror-notary.zip"
+    artifact_zip="dist/Teleprompter-Mirror-v${version}-macOS-arm64.zip"
+    ditto -c -k --keepParent "$app_path" "$submission_zip"
+    xcrun notarytool submit "$submission_zip" \
+      --keychain-profile "$notary_profile" \
+      --wait
+    xcrun stapler staple "$app_path"
+    xcrun stapler validate "$app_path"
+    spctl --assess --type execute --verbose=4 "$app_path"
+    ditto -c -k --keepParent "$app_path" "$artifact_zip"
+    shasum -a 256 "$artifact_zip" > "${artifact_zip}.sha256"
+    cp "$artifact_zip" "${artifact_zip}.sha256" "$output/"
     ;;
 esac
 

@@ -1,11 +1,12 @@
 # macOS notarization broker
 
 Private GitHub Actions broker that stores Apple credentials once and creates
-notarized artifacts for three fixed repositories:
+notarized artifacts for four fixed repositories:
 
 - `trsdn/md2loop`
 - `trsdn/OpenWritr`
 - `trsdn/PtionsPlus`
+- `trsdn/teleprompter-mirror-macos`
 
 ## Setup
 

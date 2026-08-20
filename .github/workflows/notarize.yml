@@ -11,6 +11,7 @@ on:
           - md2loop
           - openwritr
           - ptionsplus
+          - teleprompter
       tag:
         description: Existing release tag, for example v1.0.2
         required: true
@@ -43,6 +44,7 @@ jobs:
             md2loop) repo="trsdn/md2loop" ;;
             openwritr) repo="trsdn/OpenWritr" ;;
             ptionsplus) repo="trsdn/PtionsPlus" ;;
+            teleprompter) repo="trsdn/teleprompter-mirror-macos" ;;
             *) exit 1 ;;
           esac
           echo "repo=$repo" >> "$GITHUB_OUTPUT"
@@ -125,6 +127,23 @@ jobs:
               scripts/sign-release.sh
               scripts/notarize.sh
               ;;
+            teleprompter)
+              ./build-app.sh
+              app_path="dist/Teleprompter Mirror.app"
+              submission_zip="${RUNNER_TEMP}/Teleprompter-Mirror-notary.zip"
+              artifact_zip="dist/Teleprompter-Mirror-v${VERSION}-macOS-arm64.zip"
+              ditto -c -k --keepParent "$app_path" "$submission_zip"
+              xcrun notarytool submit "$submission_zip" \
+                --apple-id "$APPLE_ID" \
+                --team-id "$APPLE_TEAM_ID" \
+                --password "$APPLE_APP_PASSWORD" \
+                --wait
+              xcrun stapler staple "$app_path"
+              xcrun stapler validate "$app_path"
+              spctl --assess --type execute --verbose=4 "$app_path"
+              ditto -c -k --keepParent "$app_path" "$artifact_zip"
+              shasum -a 256 "$artifact_zip" > "${artifact_zip}.sha256"
+              ;;
           esac
 
       - name: Collect release artifacts
@@ -143,6 +162,9 @@ jobs:
               ;;
             ptionsplus)
               cp "dist/Ptions+.zip" "dist/Ptions+.dmg" "dist/Ptions+.dmg.sha256" broker-output/
+              ;;
+            teleprompter)
+              cp "dist/Teleprompter-Mirror-v${VERSION}-macOS-arm64.zip"{,.sha256} broker-output/
               ;;
           esac
 
