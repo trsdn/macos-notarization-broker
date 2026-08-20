@@ -43,7 +43,13 @@ are configured on the repository and must stay in place:
    - dismisses stale approvals on new pushes and requires review threads to be
      resolved;
    - blocks force pushes and branch deletion; and
-   - limits bypass permission to the repository administrator role.
+   - grants no bypass permission to any actor or role, including repository
+     administrators.
+
+   The rules apply to the repository owner as well: a direct push to `main` is
+   rejected, and every change must land through a pull request whose checks
+   passed. Relaxing a rule therefore requires an auditable change to the ruleset
+   itself, not a silent bypass on a single merge.
 
    `.github/CODEOWNERS` assigns `.github/workflows/**`, `scripts/**`, and
    `profiles/**` to the repository owner. While a single maintainer owns the
