@@ -59,6 +59,12 @@ release that changes its bundle identifier, executable, layout, architecture,
 entitlement policy, minimum macOS version, or dependency contract requires a
 reviewed profile update.
 
+A profile may declare `nested_executables` to ship a second binary, such as a
+privileged launch daemon helper. Each entry names an exact bundle-relative path;
+anything Mach-O or executable that is not declared is still rejected, and the
+signing job works inside-out over digests the secretless preflight recorded. See
+[SECURITY.md](SECURITY.md#nested-executable-code).
+
 Each distributable ships with a `.sha256` file, alongside `provenance.json` and
 `preflight-manifest.json` in the workflow artifact.
 

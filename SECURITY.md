@@ -86,9 +86,10 @@ repository numeric ID also fails the upstream identity gate.
 - The tag is resolved again immediately before privileged work and the run
   fails if it moved.
 - Artifact handoff uses immutable v4 artifact IDs.
-- Preflight records archive, tree, executable, source, and profile digests.
+- Preflight records archive, tree, executable, nested executable, source, and
+  profile digests.
 - The privileged job repeats archive and tree validation before importing the
-  certificate.
+  certificate, and re-verifies every digest the preflight manifest recorded.
 - Final provenance records the source commit and release-file SHA-256 values.
 
 ## Profile review requirements
@@ -100,13 +101,90 @@ and output policy. Do not add:
 - arbitrary hooks;
 - source-controlled entitlement files;
 - secret names;
-- build-time credentials; or
-- exceptions that permit nested executable code without an inside-out signing
-  and validation design.
+- credentials of any kind; or
+- nested executable code that is not named exactly, path by path.
 
-The current profiles intentionally reject nested apps, frameworks, plug-ins,
-XPC services, dylibs, symlinks, executable resources, provisioning profiles,
-and pre-existing identity-backed signatures.
+The Apple Team ID is deliberately not in that list. See
+[Apple Team ID as declarative policy](#apple-team-id-as-declarative-policy).
+
+All profiles reject symlinks, executable resources, provisioning profiles, and
+pre-existing identity-backed signatures. Nested bundles — `.app`, `.appex`,
+`.bundle`, `.framework`, `.xpc` — are rejected for every profile. Undeclared
+nested Mach-O code and undeclared executable files are rejected for every
+profile.
+
+## Nested executable code
+
+A profile may ship a second executable, such as a privileged launch daemon
+helper, only when a reviewed profile names it exactly. There are no globs, no
+directories, and no "allow anything under this path" escape. The invariant is
+unchanged: the privileged job only ever signs bytes that a secretless job
+already described.
+
+Each entry in `nested_executables` declares:
+
+- `path` — an exact bundle-relative path under `Contents/`;
+- `identifier` — the code signing identifier for that executable;
+- `entitlements` — a broker-owned entitlements plist;
+- `embedded_info_plist` — optional exact expectations checked against the
+  `__TEXT,__info_plist` section of the built binary; and
+- `launch_daemon` — the optional bundled job to pin.
+
+The secretless preflight then:
+
+- validates every declared executable exactly as it validates the main one:
+  regular file, not a symlink, Mach-O, expected architectures;
+- records a SHA-256 for each entry in the preflight manifest;
+- still fails on any Mach-O or executable file that is not declared;
+- pins a declared launch daemon by `Label` and `BundleProgram`, requires the
+  program to be the declared nested executable, and rejects `Program` and
+  `ProgramArguments` because both can point outside the bundle; and
+- allowlists the launchd job directories by exact path. A job plist is neither
+  Mach-O nor executable, so the checks above cannot see it. Any file or
+  directory under `Contents/Library/LaunchDaemons` or
+  `Contents/Library/LaunchAgents` that is not the declared `launch_daemon`
+  path is rejected. Without this, a bundle could ship a second, unreviewed job
+  definition next to the pinned one and register it at runtime, and every
+  digest would still agree because the file was described but never policed.
+
+Directory matching is case-insensitive because macOS filesystems are, so
+`Contents/Library/launchdaemons` names the same directory on the user's machine
+and cannot be used to slip past the allowlist. The comparison uses `casefold()`
+rather than `lower()` because APFS applies full Unicode case folding: `lower()`
+leaves `U+017F LATIN SMALL LETTER LONG S` unchanged, so `LaunchAgentſ` would
+evade a `lower()`-based test while still resolving to `LaunchAgents` at runtime.
+The comparison against a declared path stays exactly case-sensitive, so a bundle
+whose spelling differs from its profile is rejected rather than silently
+accepted. The same folding applies to the nested-bundle suffix check.
+
+The privileged job re-verifies every recorded digest before importing the
+certificate, signs inside-out — each nested executable first, then the enclosing
+app — verifies each signature against its declared identifier and entitlements,
+and re-verifies the whole payload after stapling and inside every repackaged
+artifact.
+
+## Apple Team ID as declarative policy
+
+A helper that embeds a client code requirement needs the Team ID while it
+compiles, which is before any secret exists in the pipeline. The broker resolves
+this without moving a secret across the boundary: `team_id` is a declarative
+profile field that the build adapter passes to `xcodebuild` as
+`DEVELOPMENT_TEAM`.
+
+A Team ID is not a credential. It is printed by `codesign -dv` on any signed
+artifact and is embedded in every notarized binary. The certificate, Apple ID,
+and app-specific password stay in the `macos-signing` environment and remain
+unreachable from the build and preflight jobs;
+`scripts/validate-repository.py` fails if either job references
+`APPLE_TEAM_ID`.
+
+Two checks keep the declared value honest:
+
+- the secretless preflight compares the declared Team ID against the value the
+  build actually embedded in each nested binary, so a helper compiled with an
+  empty or wrong team cannot reach the signing job; and
+- the privileged job refuses to sign when `team_id` does not equal
+  `APPLE_TEAM_ID`.
 
 ## Residual risks
 
@@ -120,7 +198,10 @@ and pre-existing identity-backed signatures.
 - OpenWritr uses its source-committed dependency lock. Teleprompter Mirror and
   Ptions+ currently have no external package resolution in their release
   builds.
-- Structural validation does not prove that application behavior is benign.
+- Structural validation does not prove that application behavior is benign. A
+  declared nested executable is validated and pinned, not vetted; a privileged
+  helper still runs source-repository logic with the privileges its bundled
+  launch daemon requests.
 - Apple credentials must still be rotated if the environment, certificate, or
   maintainer account is compromised.
 

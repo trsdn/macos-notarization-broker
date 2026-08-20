@@ -52,6 +52,11 @@ def main() -> int:
         "validate identity and bundle structure".lower() in preflight_block.lower(),
         "preflight validation step is missing",
     )
+    for name, block in (("build", build_block), ("preflight", preflight_block)):
+        require(
+            "APPLE_TEAM_ID" not in block,
+            f"{name} job references the Apple Team ID secret; declare team_id in the profile instead",
+        )
 
     sign_block = workflow.split("\n  sign:\n", 1)[1]
     require("environment: macos-signing" in sign_block, "signing environment is missing")
