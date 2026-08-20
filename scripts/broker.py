@@ -14,6 +14,7 @@ import secrets
 import shlex
 import shutil
 import stat
+import struct
 import subprocess
 import sys
 import tempfile
@@ -42,6 +43,19 @@ MACHO_MAGICS = {
     b"\xbf\xba\xfe\xca",
 }
 NESTED_BUNDLE_SUFFIXES = (".app", ".appex", ".bundle", ".framework", ".xpc")
+TEAM_ID_PATTERN = re.compile(r"^[A-Z0-9]{10}$")
+CODE_IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$")
+BUNDLE_RELATIVE_PATH_PATTERN = re.compile(
+    r"^Contents/[A-Za-z0-9][A-Za-z0-9 ._+-]*(?:/[A-Za-z0-9][A-Za-z0-9 ._+-]*)*$"
+)
+LAUNCH_DAEMON_DIRECTORY = "Contents/Library/LaunchDaemons"
+LAUNCH_JOB_DIRECTORIES = (LAUNCH_DAEMON_DIRECTORY, "Contents/Library/LaunchAgents")
+# macOS filesystems are case-insensitive by default, so a differently-cased
+# spelling names the same directory at runtime. Match with casefold(), which
+# implements the full Unicode fold APFS uses; str.lower() would miss folds such
+# as U+017F LATIN SMALL LETTER LONG S onto "s".
+LAUNCH_JOB_PREFIXES = tuple(directory.casefold() for directory in LAUNCH_JOB_DIRECTORIES)
+FORBIDDEN_LAUNCH_DAEMON_KEYS = ("Program", "ProgramArguments")
 
 
 class BrokerError(RuntimeError):
@@ -107,6 +121,9 @@ def load_profiles() -> dict[str, Any]:
             fail(f"Profile {name} entitlements must be a plist dictionary.")
         if "dependency_lock" in profile:
             safe_profile_path(profile["dependency_lock"])
+        if "team_id" in profile and not TEAM_ID_PATTERN.fullmatch(str(profile["team_id"])):
+            fail(f"Profile {name} has an invalid Apple Team ID.")
+        validate_nested_executable_policy(name, profile)
         for artifact in profile["artifacts"]:
             if artifact.get("type") not in {"zip", "dmg"}:
                 fail(f"Profile {name} has an unsupported artifact type.")
@@ -132,6 +149,85 @@ def safe_profile_path(relative_path: str) -> Path:
     if not candidate.is_file():
         fail(f"Profile file does not exist: {relative_path}")
     return candidate
+
+
+def nested_executables(profile: dict[str, Any]) -> list[dict[str, Any]]:
+    return profile.get("nested_executables", [])
+
+
+def render_expected_value(template: str, profile: dict[str, Any], spec: dict[str, Any]) -> str:
+    """Expand the declarative placeholders allowed in embedded Info.plist policy."""
+    try:
+        return template.format(
+            team_id=profile.get("team_id", ""),
+            bundle_identifier=profile["bundle_identifier"],
+            identifier=spec["identifier"],
+        )
+    except (IndexError, KeyError, ValueError) as error:
+        fail(f"Embedded Info.plist expectation uses an unsupported placeholder: {error}")
+    return template
+
+
+def validate_nested_executable_policy(name: str, profile: dict[str, Any]) -> None:
+    specs = profile.get("nested_executables")
+    if specs is None:
+        return
+    if not isinstance(specs, list) or not specs:
+        fail(f"Profile {name} must declare nested_executables as a non-empty list or omit it.")
+    if "team_id" not in profile:
+        fail(f"Profile {name} must declare team_id before it may ship nested executables.")
+
+    allowed_fields = {"path", "identifier", "entitlements", "embedded_info_plist", "launch_daemon"}
+    required_fields = {"path", "identifier", "entitlements"}
+    claimed = {f"Contents/MacOS/{profile['executable']}"}
+    for spec in specs:
+        if not isinstance(spec, dict):
+            fail(f"Profile {name} has a nested executable entry that is not an object.")
+        unknown = set(spec) - allowed_fields
+        if unknown:
+            fail(f"Profile {name} nested executable has unsupported fields: {', '.join(sorted(unknown))}")
+        missing = required_fields - set(spec)
+        if missing:
+            fail(f"Profile {name} nested executable is missing fields: {', '.join(sorted(missing))}")
+
+        path = spec["path"]
+        if not isinstance(path, str) or not BUNDLE_RELATIVE_PATH_PATTERN.fullmatch(path):
+            fail(f"Profile {name} has an unsafe nested executable path: {path!r}")
+        if path in claimed:
+            fail(f"Profile {name} declares a duplicate bundle path: {path}")
+        claimed.add(path)
+
+        if not CODE_IDENTIFIER_PATTERN.fullmatch(str(spec["identifier"])):
+            fail(f"Profile {name} has an invalid nested code identifier: {spec['identifier']!r}")
+        entitlement_path = safe_profile_path(spec["entitlements"])
+        with entitlement_path.open("rb") as handle:
+            entitlements = plistlib.load(handle)
+        if not isinstance(entitlements, dict):
+            fail(f"Profile {name} nested entitlements must be a plist dictionary.")
+
+        expectations = spec.get("embedded_info_plist", {})
+        if not isinstance(expectations, dict) or not all(
+            isinstance(key, str) and isinstance(value, str) for key, value in expectations.items()
+        ):
+            fail(f"Profile {name} embedded_info_plist must map string keys to string values.")
+        for template in expectations.values():
+            render_expected_value(template, profile, spec)
+
+        daemon = spec.get("launch_daemon")
+        if daemon is None:
+            continue
+        if not isinstance(daemon, dict) or set(daemon) != {"path", "label"}:
+            fail(f"Profile {name} launch_daemon must declare exactly path and label.")
+        daemon_path = daemon["path"]
+        if not isinstance(daemon_path, str) or not BUNDLE_RELATIVE_PATH_PATTERN.fullmatch(daemon_path):
+            fail(f"Profile {name} has an unsafe launch daemon path: {daemon_path!r}")
+        if PurePosixPath(daemon_path).parent.as_posix() != LAUNCH_DAEMON_DIRECTORY:
+            fail(f"Profile {name} launch daemon must live in {LAUNCH_DAEMON_DIRECTORY}.")
+        if daemon_path in claimed:
+            fail(f"Profile {name} declares a duplicate bundle path: {daemon_path}")
+        claimed.add(daemon_path)
+        if not CODE_IDENTIFIER_PATTERN.fullmatch(str(daemon["label"])):
+            fail(f"Profile {name} has an invalid launch daemon label: {daemon['label']!r}")
 
 
 def validate_tag(tag: str) -> str:
@@ -239,8 +335,10 @@ def profile_digest(app: str, profile: dict[str, Any]) -> str:
     paths = [PROFILE_FILE, safe_profile_path(profile["entitlements"])]
     if "dependency_lock" in profile:
         paths.append(safe_profile_path(profile["dependency_lock"]))
+    for spec in nested_executables(profile):
+        paths.append(safe_profile_path(spec["entitlements"]))
     digest.update(app.encode("utf-8") + b"\0")
-    for path in sorted(paths):
+    for path in sorted(set(paths)):
         digest.update(path.relative_to(ROOT).as_posix().encode("utf-8") + b"\0")
         digest.update(path.read_bytes())
         digest.update(b"\0")
@@ -347,6 +445,25 @@ def copy_app(source_app: Path, destination_app: Path) -> None:
     run(["ditto", str(source_app), str(destination_app)])
 
 
+def xcodebuild_settings(profile: dict[str, Any], version: str, build_number: str) -> list[str]:
+    settings = [
+        f"MARKETING_VERSION={version}",
+        f"CURRENT_PROJECT_VERSION={build_number}",
+        "ENABLE_HARDENED_RUNTIME=YES",
+        "CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO",
+        "CODE_SIGNING_ALLOWED=NO",
+        "CODE_SIGNING_REQUIRED=NO",
+        f"ARCHS={' '.join(profile['architectures'])}",
+        "ONLY_ACTIVE_ARCH=NO",
+    ]
+    if "team_id" in profile:
+        # A Team ID is public and is not a signing credential, so it is declared in the
+        # profile rather than exposed to the secretless build job as an Apple secret.
+        # Nested helpers need it while compiling to embed a correct client requirement.
+        settings.append(f"DEVELOPMENT_TEAM={profile['team_id']}")
+    return settings
+
+
 def build_md2loop(source: Path, work: Path, profile: dict[str, Any], version: str, build_number: str) -> Path:
     ensure_source_file(source, "md2loop.xcodeproj/project.pbxproj")
     lock = safe_profile_path(profile["dependency_lock"])
@@ -382,15 +499,8 @@ def build_md2loop(source: Path, work: Path, profile: dict[str, Any], version: st
             str(derived_data),
             "clean",
             "build",
-            f"MARKETING_VERSION={version}",
-            f"CURRENT_PROJECT_VERSION={build_number}",
-            "ENABLE_HARDENED_RUNTIME=YES",
-            "CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO",
-            "CODE_SIGNING_ALLOWED=NO",
-            "CODE_SIGNING_REQUIRED=NO",
-            "ARCHS=arm64",
-            "ONLY_ACTIVE_ARCH=NO",
-        ],
+        ]
+        + xcodebuild_settings(profile, version, build_number),
         cwd=source,
     )
     return derived_data / "Build" / "Products" / "Release" / profile["bundle_name"]
@@ -467,15 +577,8 @@ def build_ptionsplus(
             str(derived_data),
             "clean",
             "build",
-            f"MARKETING_VERSION={version}",
-            f"CURRENT_PROJECT_VERSION={build_number}",
-            "ENABLE_HARDENED_RUNTIME=YES",
-            "CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO",
-            "CODE_SIGNING_ALLOWED=NO",
-            "CODE_SIGNING_REQUIRED=NO",
-            "ARCHS=arm64",
-            "ONLY_ACTIVE_ARCH=NO",
-        ],
+        ]
+        + xcodebuild_settings(profile, version, build_number),
         cwd=source,
     )
     return derived_data / "Build" / "Products" / "Release" / profile["bundle_name"]
@@ -594,6 +697,98 @@ def is_macho(path: Path) -> bool:
         return handle.read(4) in MACHO_MAGICS
 
 
+THIN_MACHO_LAYOUTS = {
+    b"\xcf\xfa\xed\xfe": ("<", True),
+    b"\xfe\xed\xfa\xcf": (">", True),
+    b"\xce\xfa\xed\xfe": ("<", False),
+    b"\xfe\xed\xfa\xce": (">", False),
+}
+FAT_MACHO_MAGICS = {b"\xca\xfe\xba\xbe": False, b"\xca\xfe\xba\xbf": True}
+MAX_LOAD_COMMANDS = 4096
+MAX_LOAD_COMMAND_BYTES = 16 * 1024 * 1024
+MAX_EMBEDDED_PLIST_BYTES = 1024 * 1024
+
+
+def read_bounded(handle: Any, offset: int, size: int, end: int) -> bytes:
+    if offset < 0 or size < 0 or offset + size > end:
+        fail("Mach-O structure points outside its image.")
+    handle.seek(offset)
+    payload = handle.read(size)
+    if len(payload) != size:
+        fail("Mach-O image ended before a declared structure.")
+    return payload
+
+
+def parse_embedded_info_plist(handle: Any, base: int, end: int, depth: int) -> dict[str, Any]:
+    if depth > 1:
+        fail("Mach-O image nests fat headers.")
+    magic = read_bounded(handle, base, 4, end)
+    if magic in FAT_MACHO_MAGICS:
+        wide = FAT_MACHO_MAGICS[magic]
+        count = int.from_bytes(read_bounded(handle, base + 4, 4, end), "big")
+        if count != 1:
+            fail("Embedded Info.plist policy requires a single-architecture Mach-O image.")
+        entry = read_bounded(handle, base + 8, 32 if wide else 20, end)
+        width = 8 if wide else 4
+        offset = int.from_bytes(entry[8 : 8 + width], "big")
+        size = int.from_bytes(entry[8 + width : 8 + 2 * width], "big")
+        if size <= 0 or offset + size > end:
+            fail("Mach-O fat slice points outside the file.")
+        return parse_embedded_info_plist(handle, offset, offset + size, depth + 1)
+
+    if magic not in THIN_MACHO_LAYOUTS:
+        fail("File is not a Mach-O image.")
+    order, is_64 = THIN_MACHO_LAYOUTS[magic]
+    header = read_bounded(handle, base, 32 if is_64 else 28, end)
+    ncmds, sizeofcmds = struct.unpack_from(f"{order}II", header, 16)
+    if ncmds > MAX_LOAD_COMMANDS or sizeofcmds > MAX_LOAD_COMMAND_BYTES:
+        fail("Mach-O image declares an unsupported number of load commands.")
+
+    commands = read_bounded(handle, base + len(header), sizeofcmds, end)
+    segment_command = 0x19 if is_64 else 0x01
+    nsects_offset, section_start, section_size = (64, 72, 80) if is_64 else (48, 56, 68)
+    cursor = 0
+    for _ in range(ncmds):
+        if cursor + 8 > len(commands):
+            fail("Mach-O load commands are truncated.")
+        command, command_size = struct.unpack_from(f"{order}II", commands, cursor)
+        if command_size < 8 or cursor + command_size > len(commands):
+            fail("Mach-O load command has an invalid size.")
+        if command == segment_command and commands[cursor + 8 : cursor + 24].rstrip(b"\0") == b"__TEXT":
+            if section_start > command_size:
+                fail("Mach-O segment command is truncated.")
+            nsects = struct.unpack_from(f"{order}I", commands, cursor + nsects_offset)[0]
+            for index in range(nsects):
+                section = cursor + section_start + index * section_size
+                if section + section_size > cursor + command_size:
+                    fail("Mach-O segment declares more sections than it contains.")
+                if commands[section : section + 16].rstrip(b"\0") != b"__info_plist":
+                    continue
+                if is_64:
+                    size, offset = struct.unpack_from(f"{order}QI", commands, section + 40)
+                else:
+                    size, offset = struct.unpack_from(f"{order}II", commands, section + 36)
+                if size <= 0 or size > MAX_EMBEDDED_PLIST_BYTES:
+                    fail("Embedded Info.plist section has an unsupported size.")
+                payload = read_bounded(handle, base + offset, size, end)
+                try:
+                    value = plistlib.loads(payload.rstrip(b"\0"))
+                except Exception as error:
+                    fail(f"Embedded Info.plist is not a valid property list: {error}")
+                if not isinstance(value, dict):
+                    fail("Embedded Info.plist must be a dictionary.")
+                return value
+        cursor += command_size
+    fail("Mach-O image does not embed a __TEXT,__info_plist section.")
+    return {}
+
+
+def read_embedded_info_plist(path: Path) -> dict[str, Any]:
+    size = path.stat().st_size
+    with path.open("rb") as handle:
+        return parse_embedded_info_plist(handle, 0, size, 0)
+
+
 def read_bundle_info(app_path: Path) -> dict[str, Any]:
     info_path = app_path / "Contents" / "Info.plist"
     if info_path.is_symlink() or not info_path.is_file():
@@ -628,6 +823,83 @@ def tree_digest(root: Path) -> str:
     return digest.hexdigest()
 
 
+def validate_executable_image(path: Path, profile: dict[str, Any], description: str) -> list[str]:
+    if path.is_symlink() or not path.is_file():
+        fail(f"{description} is missing or unsafe.")
+    if not path.stat().st_mode & 0o111:
+        fail(f"{description} is not executable.")
+    if "Mach-O" not in run(["file", "-b", str(path)], capture=True).stdout:
+        fail(f"{description} is not Mach-O.")
+    architectures = run(["lipo", "-archs", str(path)], capture=True).stdout.split()
+    if sorted(architectures) != sorted(profile["architectures"]):
+        fail(
+            f"{description} architectures do not match profile: "
+            f"expected {profile['architectures']}, got {architectures}"
+        )
+    return architectures
+
+
+def validate_launch_daemon(app_path: Path, spec: dict[str, Any]) -> dict[str, Any]:
+    daemon = spec["launch_daemon"]
+    plist_path = app_path / daemon["path"]
+    if plist_path.is_symlink() or not plist_path.is_file():
+        fail(f"Declared launch daemon plist is missing or unsafe: {daemon['path']}")
+    try:
+        with plist_path.open("rb") as handle:
+            job = plistlib.load(handle)
+    except Exception as error:
+        fail(f"Launch daemon plist is invalid: {daemon['path']}: {error}")
+    if not isinstance(job, dict):
+        fail(f"Launch daemon plist must be a dictionary: {daemon['path']}")
+    for key in FORBIDDEN_LAUNCH_DAEMON_KEYS:
+        if key in job:
+            fail(f"Launch daemon plist must not declare {key}: {daemon['path']}")
+    if job.get("Label") != daemon["label"]:
+        fail(
+            f"Launch daemon label mismatch in {daemon['path']}: "
+            f"expected {daemon['label']!r}, got {job.get('Label')!r}"
+        )
+    if job.get("BundleProgram") != spec["path"]:
+        fail(
+            f"Launch daemon BundleProgram mismatch in {daemon['path']}: "
+            f"expected {spec['path']!r}, got {job.get('BundleProgram')!r}"
+        )
+    return {
+        "path": daemon["path"],
+        "label": daemon["label"],
+        "sha256": sha256_file(plist_path),
+    }
+
+
+def validate_nested_executable(
+    app_path: Path, profile: dict[str, Any], spec: dict[str, Any]
+) -> dict[str, Any]:
+    path = app_path / spec["path"]
+    description = f"Declared nested executable {spec['path']}"
+    architectures = validate_executable_image(path, profile, description)
+
+    expectations = spec.get("embedded_info_plist", {})
+    if expectations:
+        embedded = read_embedded_info_plist(path)
+        for key, template in sorted(expectations.items()):
+            expected = render_expected_value(template, profile, spec)
+            if embedded.get(key) != expected:
+                fail(
+                    f"{description} embedded Info.plist key {key!r} does not match profile "
+                    f"policy: expected {expected!r}, got {embedded.get(key)!r}"
+                )
+
+    record = {
+        "path": spec["path"],
+        "identifier": spec["identifier"],
+        "architectures": architectures,
+        "sha256": sha256_file(path),
+    }
+    if "launch_daemon" in spec:
+        record["launch_daemon"] = validate_launch_daemon(app_path, spec)
+    return record
+
+
 def validate_app_tree(
     app_path: Path,
     profile: dict[str, Any],
@@ -647,6 +919,11 @@ def validate_app_tree(
     file_count = 0
     total_size = 0
     main_executable = macos / profile["executable"]
+    specs = nested_executables(profile)
+    declared_code = {main_executable} | {app_path / spec["path"] for spec in specs}
+    declared_jobs = {
+        app_path / spec["launch_daemon"]["path"] for spec in specs if "launch_daemon" in spec
+    }
     for path in app_path.rglob("*"):
         relative = path.relative_to(app_path)
         metadata = path.lstat()
@@ -654,8 +931,12 @@ def validate_app_tree(
             stat.S_ISREG(metadata.st_mode) or stat.S_ISDIR(metadata.st_mode)
         ):
             fail(f"Application contains a symlink or special file: {relative}")
+        posix = relative.as_posix().casefold()
+        if any(posix.startswith(f"{directory}/") for directory in LAUNCH_JOB_PREFIXES):
+            if path not in declared_jobs:
+                fail(f"Undeclared launchd job definition: {relative}")
         if path.is_dir() and path != app_path:
-            if path.name.endswith(NESTED_BUNDLE_SUFFIXES):
+            if path.name.casefold().endswith(NESTED_BUNDLE_SUFFIXES):
                 fail(f"Nested bundles are not allowed for this profile: {relative}")
             continue
         file_count += 1
@@ -664,26 +945,17 @@ def validate_app_tree(
             fail("Application exceeds the file-count limit.")
         if total_size > profile["max_uncompressed_bytes"]:
             fail("Application exceeds the size limit.")
-        if path != main_executable and is_macho(path):
+        if path not in declared_code and is_macho(path):
             fail(f"Unexpected nested Mach-O code: {relative}")
-        if path != main_executable and metadata.st_mode & 0o111:
+        if path not in declared_code and metadata.st_mode & 0o111:
             fail(f"Unexpected executable file: {relative}")
         if path.name == "embedded.provisionprofile" or "_CodeSignature" in relative.parts:
             fail(f"Unsigned input contains signing material: {relative}")
 
-    if main_executable.is_symlink() or not main_executable.is_file():
-        fail("Application main executable is missing or unsafe.")
-    if not main_executable.stat().st_mode & 0o111:
-        fail("Application main executable is not executable.")
-    file_result = run(["file", "-b", str(main_executable)], capture=True)
-    if "Mach-O" not in file_result.stdout:
-        fail("Application main executable is not Mach-O.")
-    architectures = run(["lipo", "-archs", str(main_executable)], capture=True).stdout.split()
-    if sorted(architectures) != sorted(profile["architectures"]):
-        fail(
-            "Application architectures do not match profile: "
-            f"expected {profile['architectures']}, got {architectures}"
-        )
+    architectures = validate_executable_image(
+        main_executable, profile, "Application main executable"
+    )
+    nested_records = [validate_nested_executable(app_path, profile, spec) for spec in specs]
 
     info = read_bundle_info(app_path)
     checks = {
@@ -737,6 +1009,7 @@ def validate_app_tree(
         "uncompressed_bytes": total_size,
         "tree_sha256": tree_digest(app_path),
         "main_executable_sha256": sha256_file(main_executable),
+        "nested_executables": nested_records,
     }
 
 
@@ -902,29 +1175,70 @@ def read_signed_entitlements(app_path: Path) -> dict[str, Any]:
     return {}
 
 
+def verify_signed_code(
+    path: Path,
+    *,
+    description: str,
+    expected_identifier: str,
+    expected_team_id: str,
+    expected_entitlements: dict[str, Any],
+    deep: bool,
+) -> None:
+    verify = ["codesign", "--verify", "--strict", "--verbose=2", str(path)]
+    if deep:
+        verify.insert(2, "--deep")
+    run(verify)
+    details = run(["codesign", "-dv", "--verbose=4", str(path)], capture=True)
+    combined = (details.stdout or "") + (details.stderr or "")
+    team_match = re.search(r"^TeamIdentifier=(.+)$", combined, re.MULTILINE)
+    if not team_match or team_match.group(1).strip() != expected_team_id:
+        fail(f"{description} TeamIdentifier does not match APPLE_TEAM_ID.")
+    identifier_match = re.search(r"^Identifier=(.+)$", combined, re.MULTILINE)
+    if not identifier_match or identifier_match.group(1).strip() != expected_identifier:
+        fail(f"{description} identifier does not match the profile.")
+    if "runtime" not in combined:
+        fail(f"{description} does not have Hardened Runtime enabled.")
+    actual_entitlements = read_signed_entitlements(path)
+    if actual_entitlements != expected_entitlements:
+        fail(
+            f"{description} entitlements do not match broker policy. "
+            f"Expected {expected_entitlements}, got {actual_entitlements}."
+        )
+
+
 def verify_signed_app(
     app_path: Path,
     profile: dict[str, Any],
     expected_team_id: str,
     expected_entitlements: dict[str, Any],
 ) -> None:
-    run(["codesign", "--verify", "--deep", "--strict", "--verbose=2", str(app_path)])
-    details = run(["codesign", "-dv", "--verbose=4", str(app_path)], capture=True)
-    combined = (details.stdout or "") + (details.stderr or "")
-    team_match = re.search(r"^TeamIdentifier=(.+)$", combined, re.MULTILINE)
-    if not team_match or team_match.group(1).strip() != expected_team_id:
-        fail("Signed application TeamIdentifier does not match APPLE_TEAM_ID.")
-    identifier_match = re.search(r"^Identifier=(.+)$", combined, re.MULTILINE)
-    if not identifier_match or identifier_match.group(1).strip() != profile["bundle_identifier"]:
-        fail("Signed application identifier does not match the profile.")
-    if "runtime" not in combined:
-        fail("Signed application does not have Hardened Runtime enabled.")
-    actual_entitlements = read_signed_entitlements(app_path)
-    if actual_entitlements != expected_entitlements:
-        fail(
-            "Signed entitlements do not match broker policy. "
-            f"Expected {expected_entitlements}, got {actual_entitlements}."
-        )
+    verify_signed_code(
+        app_path,
+        description="Signed application",
+        expected_identifier=profile["bundle_identifier"],
+        expected_team_id=expected_team_id,
+        expected_entitlements=expected_entitlements,
+        deep=True,
+    )
+
+
+def verify_signed_nested(
+    app_path: Path,
+    profile: dict[str, Any],
+    spec: dict[str, Any],
+    expected_team_id: str,
+) -> None:
+    entitlement_path = safe_profile_path(spec["entitlements"])
+    with entitlement_path.open("rb") as handle:
+        expected_entitlements = plistlib.load(handle)
+    verify_signed_code(
+        app_path / spec["path"],
+        description=f"Signed nested executable {spec['path']}",
+        expected_identifier=spec["identifier"],
+        expected_team_id=expected_team_id,
+        expected_entitlements=expected_entitlements,
+        deep=False,
+    )
 
 
 def notary_submit(path: Path, apple_id: str, team_id: str, password: str) -> None:
@@ -952,26 +1266,29 @@ def checksum_file(path: Path) -> Path:
     return checksum
 
 
-def compare_executable(reference: Path, candidate_app: Path, executable: str) -> None:
-    candidate = candidate_app / "Contents" / "MacOS" / executable
-    if not candidate.is_file():
-        fail("Packaged artifact is missing the signed main executable.")
-    if sha256_file(reference) != sha256_file(candidate):
-        fail("Packaged artifact contains a different main executable.")
+def compare_signed_payload(signed_app: Path, candidate_app: Path, profile: dict[str, Any]) -> None:
+    relative_paths = [f"Contents/MacOS/{profile['executable']}"]
+    relative_paths += [spec["path"] for spec in nested_executables(profile)]
+    for relative in relative_paths:
+        reference = signed_app / relative
+        candidate = candidate_app / relative
+        if candidate.is_symlink() or not candidate.is_file():
+            fail(f"Packaged artifact is missing signed code: {relative}")
+        if sha256_file(reference) != sha256_file(candidate):
+            fail(f"Packaged artifact contains different signed code: {relative}")
 
 
 def create_and_verify_zip(
     app_path: Path,
     output: Path,
     profile: dict[str, Any],
-    reference_executable: Path,
 ) -> None:
     run(["ditto", "-c", "-k", "--norsrc", "--keepParent", str(app_path), str(output)])
     with tempfile.TemporaryDirectory(prefix="broker-verify-zip-") as temporary:
         extracted = Path(temporary)
         run(["ditto", "-x", "-k", str(output), str(extracted)])
         candidate = extracted / profile["bundle_name"]
-        compare_executable(reference_executable, candidate, profile["executable"])
+        compare_signed_payload(app_path, candidate, profile)
         run(["codesign", "--verify", "--deep", "--strict", "--verbose=2", str(candidate)])
         run(["xcrun", "stapler", "validate", str(candidate)])
 
@@ -984,7 +1301,6 @@ def create_and_verify_dmg(
     apple_id: str,
     team_id: str,
     password: str,
-    reference_executable: Path,
 ) -> None:
     with tempfile.TemporaryDirectory(prefix="broker-dmg-") as temporary:
         temporary_path = Path(temporary)
@@ -1043,12 +1359,50 @@ def create_and_verify_dmg(
             )
             attached = True
             candidate = mount_point / profile["bundle_name"]
-            compare_executable(reference_executable, candidate, profile["executable"])
+            compare_signed_payload(app_path, candidate, profile)
             run(["codesign", "--verify", "--deep", "--strict", "--verbose=2", str(candidate)])
             run(["xcrun", "stapler", "validate", str(candidate)])
         finally:
             if attached:
                 run(["hdiutil", "detach", str(mount_point), "-quiet"], check=False)
+
+
+def verify_preflight_manifest(
+    manifest_path: Path,
+    app: str,
+    version: str,
+    pre_sign: dict[str, Any],
+    expected_profile_digest: str,
+) -> None:
+    """Re-verify every digest the secretless preflight recorded, before any secret is used."""
+    if manifest_path.is_symlink() or not manifest_path.is_file():
+        fail("Preflight manifest is missing.")
+    try:
+        with manifest_path.open("r", encoding="utf-8") as handle:
+            manifest = json.load(handle)
+    except Exception as error:
+        fail(f"Preflight manifest is not valid JSON: {error}")
+    if not isinstance(manifest, dict):
+        fail("Preflight manifest must be an object.")
+    if manifest.get("profile") != app or manifest.get("version") != version:
+        fail("Preflight manifest describes a different profile or version.")
+    if manifest.get("profile_digest") != expected_profile_digest:
+        fail("Preflight manifest was produced against a different broker profile.")
+
+    application = manifest.get("application")
+    if not isinstance(application, dict):
+        fail("Preflight manifest does not describe an application.")
+    for key in ("tree_sha256", "main_executable_sha256"):
+        if application.get(key) != pre_sign[key]:
+            fail(f"Preflight manifest {key} does not match the revalidated bundle.")
+
+    entries = application.get("nested_executables", [])
+    if not isinstance(entries, list) or not all(isinstance(entry, dict) for entry in entries):
+        fail("Preflight manifest nested executable records are malformed.")
+    recorded = {entry.get("path"): entry.get("sha256") for entry in entries}
+    current = {entry["path"]: entry["sha256"] for entry in pre_sign["nested_executables"]}
+    if recorded != current:
+        fail("Preflight manifest nested executable digests do not match the revalidated bundle.")
 
 
 def command_sign(args: argparse.Namespace) -> None:
@@ -1072,6 +1426,8 @@ def command_sign(args: argparse.Namespace) -> None:
         fail("Application tree changed after secretless preflight.")
     if profile_digest(args.app, profile) != args.profile_digest:
         fail("Broker profile digest does not match the resolver output.")
+    preflight_manifest = Path(args.preflight_manifest).resolve()
+    verify_preflight_manifest(preflight_manifest, args.app, version, pre_sign, args.profile_digest)
 
     required_environment = [
         "MACOS_CERTIFICATE",
@@ -1088,6 +1444,9 @@ def command_sign(args: argparse.Namespace) -> None:
     apple_id = os.environ["APPLE_ID"]
     team_id = os.environ["APPLE_TEAM_ID"]
     apple_password = os.environ["APPLE_APP_PASSWORD"]
+    declared_team_id = profile.get("team_id")
+    if declared_team_id is not None and declared_team_id != team_id:
+        fail("Profile team_id does not match APPLE_TEAM_ID; the build and signing identities differ.")
 
     output_dir = Path(args.output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -1155,6 +1514,25 @@ def command_sign(args: argparse.Namespace) -> None:
             entitlement_path = safe_profile_path(profile["entitlements"])
             with entitlement_path.open("rb") as handle:
                 expected_entitlements = plistlib.load(handle)
+            specs = nested_executables(profile)
+            for spec in specs:
+                run(
+                    [
+                        "codesign",
+                        "--force",
+                        "--sign",
+                        identity,
+                        "--identifier",
+                        spec["identifier"],
+                        "--options",
+                        "runtime",
+                        "--timestamp",
+                        "--entitlements",
+                        str(safe_profile_path(spec["entitlements"])),
+                        str(app_path / spec["path"]),
+                    ]
+                )
+                verify_signed_nested(app_path, profile, spec, team_id)
             run(
                 [
                     "codesign",
@@ -1172,6 +1550,8 @@ def command_sign(args: argparse.Namespace) -> None:
                 ]
             )
             verify_signed_app(app_path, profile, team_id, expected_entitlements)
+            for spec in specs:
+                verify_signed_nested(app_path, profile, spec, team_id)
 
             submission = temporary_path / "app-notarization.zip"
             run(
@@ -1189,6 +1569,8 @@ def command_sign(args: argparse.Namespace) -> None:
             run(["xcrun", "stapler", "staple", str(app_path)])
             run(["xcrun", "stapler", "validate", str(app_path)])
             verify_signed_app(app_path, profile, team_id, expected_entitlements)
+            for spec in specs:
+                verify_signed_nested(app_path, profile, spec, team_id)
             run(["spctl", "--assess", "--type", "execute", "--verbose=4", str(app_path)])
 
             reference_executable = app_path / "Contents" / "MacOS" / profile["executable"]
@@ -1197,7 +1579,7 @@ def command_sign(args: argparse.Namespace) -> None:
                 name = artifact["name"].format(version=version)
                 destination = output_dir / name
                 if artifact["type"] == "zip":
-                    create_and_verify_zip(app_path, destination, profile, reference_executable)
+                    create_and_verify_zip(app_path, destination, profile)
                 else:
                     create_and_verify_dmg(
                         app_path,
@@ -1207,7 +1589,6 @@ def command_sign(args: argparse.Namespace) -> None:
                         apple_id,
                         team_id,
                         apple_password,
-                        reference_executable,
                     )
                 checksum = checksum_file(destination)
                 artifacts.append(
@@ -1248,6 +1629,14 @@ def command_sign(args: argparse.Namespace) -> None:
                     "bundle_identifier": profile["bundle_identifier"],
                     "team_id": team_id,
                     "main_executable_sha256": sha256_file(reference_executable),
+                    "nested_executables": [
+                        {
+                            "path": spec["path"],
+                            "identifier": spec["identifier"],
+                            "sha256": sha256_file(app_path / spec["path"]),
+                        }
+                        for spec in specs
+                    ],
                 },
                 "artifacts": artifacts,
             }
