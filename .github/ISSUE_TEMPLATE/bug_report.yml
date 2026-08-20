@@ -1,0 +1,85 @@
+name: Bug report
+description: A broker run, script, or validation step behaves incorrectly.
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Do not paste Apple credentials, certificate data, notarization
+        passwords, or private workflow logs. Redact anything sensitive before
+        submitting. For a suspected vulnerability, use private security
+        reporting instead of this form.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Notarization workflow (.github/workflows/notarize.yml)
+        - Broker script (scripts/broker.py)
+        - Request or local dispatch script (scripts/request.sh, scripts/local.sh)
+        - Secret setup (scripts/setup-secrets.sh)
+        - Application profile (profiles/)
+        - Repository validation (scripts/validate-repository.py)
+        - Tests or CI
+        - Documentation
+    validations:
+      required: true
+
+  - type: input
+    id: profile
+    attributes:
+      label: Application profile and tag
+      description: For example `teleprompter v1.4.0`. Leave blank if not applicable.
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include the failing job and step name if the problem happened in Actions.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Dispatch `Notarize macOS release` for ...
+        2. The `preflight` job fails at ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Redacted output
+      description: Relevant, redacted log lines or error output.
+      render: text
+
+  - type: textarea
+    id: local-validation
+    attributes:
+      label: Local validation output
+      description: >-
+        Output of `python3 -m unittest discover -s tests -v` and
+        `python3 scripts/validate-repository.py`, if you ran them.
+      render: text
+
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Confirmations
+      options:
+        - label: This report contains no credentials, certificates, or private logs.
+          required: true
+        - label: This is not a security vulnerability report.
+          required: true

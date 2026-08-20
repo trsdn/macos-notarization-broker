@@ -1,0 +1,56 @@
+name: Feature or change request
+description: Propose a change to the broker workflow, scripts, or documentation.
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Changes that touch `.github/workflows/**`, `scripts/**`, or
+        `profiles/**` are reviewed against
+        [SECURITY.md](https://github.com/trsdn/macos-notarization-broker/blob/main/SECURITY.md).
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What is difficult, unsafe, or impossible today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+
+  - type: textarea
+    id: security-impact
+    attributes:
+      label: Security impact
+      description: >-
+        Describe the effect on the trust model: job isolation, secret exposure,
+        workflow permissions, action pinning, the dispatch authorization gate,
+        and profile validation strictness.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: constraints
+    attributes:
+      label: Preserved constraints
+      options:
+        - label: Keeps immutable numeric actor and repository ID validation.
+          required: true
+        - label: Keeps profile allowlist enforcement in `profiles/apps.json`.
+          required: true
+        - label: Keeps Apple secrets scoped to the `macos-signing` environment.
+          required: true
+        - label: Keeps read-only, least-privilege workflow permissions.
+          required: true

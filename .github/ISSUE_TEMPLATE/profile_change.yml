@@ -1,0 +1,80 @@
+name: Application profile change
+description: Add or change an allowlisted application profile.
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Profiles decide what this broker is willing to sign. Requests are
+        accepted only for repositories the broker owner controls.
+
+  - type: input
+    id: profile-name
+    attributes:
+      label: Profile name
+      description: Existing profile key, or the proposed key for a new profile.
+    validations:
+      required: true
+
+  - type: input
+    id: repository
+    attributes:
+      label: Source repository
+      placeholder: owner/name
+    validations:
+      required: true
+
+  - type: input
+    id: repository-id
+    attributes:
+      label: Repository numeric ID
+      description: "Output of `gh api repos/OWNER/NAME --jq .id`."
+    validations:
+      required: true
+
+  - type: dropdown
+    id: change-type
+    attributes:
+      label: Change type
+      options:
+        - New profile
+        - Bundle identifier, executable, or layout change
+        - Entitlement policy change
+        - Architecture or minimum macOS version change
+        - Dependency lock change
+        - Artifact naming change
+    validations:
+      required: true
+
+  - type: textarea
+    id: details
+    attributes:
+      label: Requested policy
+      description: >-
+        Bundle identifier, executable name, expected archive layout, entitlements,
+        architectures, minimum macOS version, and artifact names.
+    validations:
+      required: true
+
+  - type: textarea
+    id: justification
+    attributes:
+      label: Why this is safe
+      description: >-
+        Explain why the requested layout and entitlements remain acceptable, and
+        confirm the release contains no nested apps, frameworks, plug-ins, XPC
+        services, dylibs, symlinks, executable resources, provisioning profiles,
+        or pre-existing identity-backed signatures.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Confirmations
+      options:
+        - label: The profile stays declarative, with no shell fragments, hooks, or secret names.
+          required: true
+        - label: Corresponding assertions in `tests/test_broker.py` will be updated.
+          required: true

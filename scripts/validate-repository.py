@@ -9,7 +9,12 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent.parent
-WORKFLOW = ROOT / ".github" / "workflows" / "notarize.yml"
+WORKFLOW_DIR = ROOT / ".github" / "workflows"
+WORKFLOW = WORKFLOW_DIR / "notarize.yml"
+PINNED_ACTION = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}")
+PERMISSION_VALUE = re.compile(
+    r"^\s+[a-z-]+:\s*(read|write|none|read-all|write-all)\s*$", re.MULTILINE
+)
 
 
 def require(condition: bool, message: str) -> None:
@@ -17,7 +22,68 @@ def require(condition: bool, message: str) -> None:
         raise AssertionError(message)
 
 
-def main() -> int:
+def workflow_paths() -> list[Path]:
+    return sorted(
+        path for pattern in ("*.yml", "*.yaml") for path in WORKFLOW_DIR.glob(pattern)
+    )
+
+
+def require_pinned_actions(workflow: str, label: str) -> None:
+    for action in re.findall(r"^\s*uses:\s*([^#\s]+)", workflow, re.MULTILINE):
+        require(
+            PINNED_ACTION.fullmatch(action) is not None,
+            f"{label}: action is not pinned to a full commit: {action}",
+        )
+
+
+def require_no_expression_interpolation(workflow: str, label: str) -> None:
+    lines = workflow.splitlines()
+    for index, line in enumerate(lines):
+        if line.strip() != "run: |":
+            continue
+        run_indent = len(line) - len(line.lstrip())
+        command_lines: list[str] = []
+        for command_line in lines[index + 1 :]:
+            if command_line.strip() and len(command_line) - len(command_line.lstrip()) <= run_indent:
+                break
+            command_lines.append(command_line)
+        require(
+            "${{" not in "\n".join(command_lines),
+            f"{label}: GitHub expression is interpolated directly into a shell command",
+        )
+
+
+def validate_supporting_workflow(path: Path) -> None:
+    """Checks applied to every workflow other than the notarization workflow."""
+
+    label = path.name
+    workflow = path.read_text(encoding="utf-8")
+    require(
+        "\npermissions: {}\n" in workflow,
+        f"{label}: top-level permissions must be empty",
+    )
+    for value in PERMISSION_VALUE.findall(workflow):
+        require(
+            value in {"read", "none"},
+            f"{label}: workflow grants a non-read permission: {value}",
+        )
+    require(
+        "secrets." not in workflow,
+        f"{label}: only the notarization workflow may reference secrets",
+    )
+    require(
+        "environment:" not in workflow,
+        f"{label}: only the notarization workflow may use a deployment environment",
+    )
+    require(
+        "pull_request_target:" not in workflow,
+        f"{label}: pull_request_target exposes a privileged context to untrusted code",
+    )
+    require_pinned_actions(workflow, label)
+    require_no_expression_interpolation(workflow, label)
+
+
+def validate_notarize_workflow() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
     trigger_block = workflow.split("\non:\n", 1)[1].split("\npermissions:", 1)[0]
     require("workflow_dispatch:" in trigger_block, "workflow_dispatch trigger is missing")
@@ -27,11 +93,7 @@ def main() -> int:
 
     actions = re.findall(r"^\s*uses:\s*([^#\s]+)", workflow, re.MULTILINE)
     require(actions, "workflow does not use any pinned actions")
-    for action in actions:
-        require(
-            re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}", action) is not None,
-            f"action is not pinned to a full commit: {action}",
-        )
+    require_pinned_actions(workflow, "notarize.yml")
 
     build_block = workflow.split("\n  build:\n", 1)[1].split("\n  preflight:\n", 1)[0]
     require("secrets." not in build_block, "untrusted build job references secrets")
@@ -69,20 +131,7 @@ def main() -> int:
     first_secret = workflow.index("secrets.")
     require(first_secret > workflow.index("\n  sign:\n"), "Apple secrets are referenced before sign job")
     require(workflow.count("secrets.") == 5, "unexpected workflow secret reference count")
-    lines = workflow.splitlines()
-    for index, line in enumerate(lines):
-        if line.strip() != "run: |":
-            continue
-        run_indent = len(line) - len(line.lstrip())
-        command_lines: list[str] = []
-        for command_line in lines[index + 1 :]:
-            if command_line.strip() and len(command_line) - len(command_line.lstrip()) <= run_indent:
-                break
-            command_lines.append(command_line)
-        require(
-            "${{" not in "\n".join(command_lines),
-            "GitHub expression is interpolated directly into a shell command",
-        )
+    require_no_expression_interpolation(workflow, "notarize.yml")
 
     authorization_markers = (
         "EXPECTED_BROKER_REPOSITORY_ID",
@@ -92,6 +141,15 @@ def main() -> int:
     )
     for marker in authorization_markers:
         require(marker in workflow, f"authorization gate is missing: {marker}")
+
+
+def main() -> int:
+    paths = workflow_paths()
+    require(WORKFLOW in paths, "notarization workflow is missing")
+    validate_notarize_workflow()
+    for path in paths:
+        if path != WORKFLOW:
+            validate_supporting_workflow(path)
 
     print("Static broker security validation passed.")
     return 0
