@@ -50,7 +50,8 @@ jobs:
       - name: Parse repository YAML configuration
         run: |
           set -euo pipefail
-          for document in .github/workflows/*.yml .github/dependabot.yml; do
+          for document in .github/workflows/*.yml .github/dependabot.yml \
+            .github/ISSUE_TEMPLATE/*.yml; do
             ruby -e 'require "yaml"; YAML.load_file(ARGV[0])' "$document"
           done
 
