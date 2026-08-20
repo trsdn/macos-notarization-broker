@@ -588,13 +588,12 @@ def build_ptionsplus(
 def build_spacemender(
     source: Path, work: Path, profile: dict[str, Any], version: str, build_number: str
 ) -> Path:
-    # SpaceMender's canonical manifest is project.yml; the Xcode project is
-    # generated from it and is not authoritative even when committed. Generating
-    # here means the broker builds what the manifest describes rather than a
-    # checked-in project that may disagree with it.
-    ensure_source_file(source, "project.yml")
-    require_tools(["xcodegen"])
-    run(["xcodegen", "generate"], cwd=source)
+    # Built from the committed project rather than generated from project.yml:
+    # the untrusted build job runs only tooling preinstalled on the runner, and
+    # XcodeGen is not part of that image. Fetching it here would add an unpinned
+    # download to the job that handles third-party source. A committed project
+    # that disagrees with the manifest cannot smuggle anything through either,
+    # because preflight validates the produced bundle against this profile.
     ensure_source_file(source, "SpaceMender.xcodeproj/project.pbxproj")
     derived_data = work / "DerivedData"
     run(

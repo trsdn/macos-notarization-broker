@@ -94,8 +94,14 @@ review:
 1. Update `profiles/apps.json` and any entitlements file under
    `profiles/entitlements/`.
 2. Confirm the repository numeric ID is correct and immutable.
-3. Add or update the corresponding assertions in `tests/test_broker.py`.
-4. Explain in the pull request why the new bundle layout, entitlements,
+3. Add the profile to the `app` choices in `.github/workflows/notarize.yml` and
+   to both the accepted list and the usage text in `scripts/request.sh`. A
+   profile missing from either is approved policy that cannot be dispatched.
+4. Add the build adapter to `allowed_adapters` **and** give it a dispatch branch
+   in `command_build`. An adapter may use only tooling preinstalled on the
+   runner image; the build job handles untrusted source and installs nothing.
+5. Add or update the corresponding assertions in `tests/test_broker.py`.
+6. Explain in the pull request why the new bundle layout, entitlements,
    architecture, minimum macOS version, and dependency contract are acceptable.
 
 ## Code of conduct
