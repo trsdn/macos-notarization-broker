@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import inspect
 import json
 import plistlib
 import re
@@ -855,6 +856,82 @@ class BuildSettingsTests(unittest.TestCase):
                 "ONLY_ACTIVE_ARCH=NO",
             ],
         )
+
+
+# Tools the macos-15 runner image provides. The untrusted build job installs
+# nothing, so an adapter that reaches for anything outside this set fails at
+# dispatch time on a real runner rather than in review.
+PREINSTALLED_TOOLS = {
+    "codesign",
+    "ditto",
+    "file",
+    "git",
+    "hdiutil",
+    "lipo",
+    "plutil",
+    "swift",
+    "xattr",
+    "xcodebuild",
+    "xcrun",
+}
+
+
+class BuildAdapterTests(unittest.TestCase):
+    def test_every_declared_adapter_has_a_dispatch_branch(self) -> None:
+        # load_profiles() only checks the adapter against an allowlist. Without
+        # this, onboarding a profile and forgetting its dispatch branch stays
+        # invisible until the privileged pipeline is already running.
+        source = inspect.getsource(broker.command_build)
+        for name, profile in sorted(broker.load_profiles().items()):
+            with self.subTest(profile=name):
+                self.assertIn(f'adapter == "{profile["build_adapter"]}"', source)
+
+    def test_adapters_require_only_tools_the_runner_provides(self) -> None:
+        for name in dir(broker):
+            if not name.startswith(("build_", "assemble_")):
+                continue
+            function = getattr(broker, name)
+            if not callable(function) or name == "build_parser":
+                continue
+            source = inspect.getsource(function)
+            for group in re.findall(r"require_tools\(\s*\[([^\]]*)\]", source):
+                for tool in re.findall(r'"([^"]+)"', group):
+                    with self.subTest(adapter=name, tool=tool):
+                        self.assertIn(tool, PREINSTALLED_TOOLS)
+
+    def test_spacemender_builds_the_committed_project(self) -> None:
+        profile = broker.get_profile("spacemender")
+        calls: list[list[str]] = []
+
+        def fake_run(command, **kwargs):  # type: ignore[no-untyped-def]
+            calls.append(command)
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "source"
+            (source / "SpaceMender.xcodeproj").mkdir(parents=True)
+            (source / "SpaceMender.xcodeproj" / "project.pbxproj").write_text("", encoding="utf-8")
+            work = Path(temporary) / "work"
+            work.mkdir()
+            with mock.patch.object(broker, "run", side_effect=fake_run):
+                broker.build_spacemender(source, work, profile, "1.2.3", "42")
+
+        self.assertEqual(len(calls), 1, "the build must be a single xcodebuild invocation")
+        command = calls[0]
+        self.assertEqual(command[0], "xcodebuild")
+        self.assertIn("-project", command)
+        self.assertIn(f"DEVELOPMENT_TEAM={profile['team_id']}", command)
+
+    def test_spacemender_build_requires_the_committed_project(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "source"
+            source.mkdir(parents=True)
+            work = Path(temporary) / "work"
+            work.mkdir()
+            with self.assertRaises(broker.BrokerError):
+                broker.build_spacemender(
+                    source, work, broker.get_profile("spacemender"), "1.2.3", "42"
+                )
 
 
 if __name__ == "__main__":
