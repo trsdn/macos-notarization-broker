@@ -1,5 +1,8 @@
 # macOS notarization broker
 
+[![CI](https://github.com/trsdn/macos-notarization-broker/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/trsdn/macos-notarization-broker/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 A manual GitHub Actions broker that produces notarized macOS artifacts for a
 fixed set of source repositories, without exposing Apple credentials to source
 repository code.
@@ -64,6 +67,9 @@ Each distributable ships with a `.sha256` file, alongside `provenance.json` and
 
 ## Validate changes
 
+Run these from the repository root; CI runs the same checks on every pull
+request and on pushes to `main`:
+
 ```bash
 python3 -m unittest discover -s tests -v
 python3 scripts/validate-repository.py
@@ -71,3 +77,20 @@ python3 -m py_compile scripts/broker.py scripts/validate-repository.py
 bash -n scripts/*.sh
 ruby -e 'require "yaml"; YAML.load_file(".github/workflows/notarize.yml")'
 ```
+
+`python3 -m unittest discover -s tests -v` is the primary test command and needs
+only a standard Python 3 installation.
+
+## Contributing
+
+Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request; it covers
+the review rules, the security constraints that must be preserved, and the
+dependency update process. Participation is governed by the
+[Code of Conduct](CODE_OF_CONDUCT.md). Report vulnerabilities privately as
+described in [SECURITY.md](SECURITY.md#reporting-a-vulnerability).
+
+## License
+
+[MIT](LICENSE). The broker signs only the allowlisted applications in
+`profiles/apps.json`; the license covers this repository's code, not those
+applications.

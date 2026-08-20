@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions: {}
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Tests and static validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Run broker unit tests
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s tests -v
+
+      - name: Run static repository security validation
+        run: |
+          set -euo pipefail
+          python3 scripts/validate-repository.py
+
+      - name: Byte-compile broker scripts
+        run: |
+          set -euo pipefail
+          python3 -m py_compile scripts/broker.py scripts/validate-repository.py
+
+      - name: Check shell script syntax
+        run: |
+          set -euo pipefail
+          bash -n scripts/*.sh
+
+      - name: Parse repository YAML configuration
+        run: |
+          set -euo pipefail
+          for document in .github/workflows/*.yml .github/dependabot.yml; do
+            ruby -e 'require "yaml"; YAML.load_file(ARGV[0])' "$document"
+          done
+
+      - name: Check profile policy is valid JSON
+        run: |
+          set -euo pipefail
+          python3 -m json.tool profiles/apps.json > /dev/null
+
+  tests-macos:
+    name: Unit tests on macOS
+    runs-on: macos-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Run broker unit tests
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s tests -v
