@@ -116,7 +116,9 @@ runner with no access to repository secrets or the `GITHUB_TOKEN` write scopes.
 - The external checkout fetches the recorded SHA, never the tag.
 - The tag is resolved again immediately before privileged work and the run
   fails if it moved.
-- Artifact handoff uses immutable v4 artifact IDs.
+- Artifact handoff addresses artifacts by their immutable numeric artifact ID
+  (`artifact-ids`), never by name, so a later upload cannot shadow the bytes a
+  downstream job consumes.
 - Preflight records archive, tree, executable, nested executable, source, and
   profile digests.
 - The privileged job repeats archive and tree validation before importing the
