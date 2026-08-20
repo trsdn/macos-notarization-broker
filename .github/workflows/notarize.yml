@@ -1,4 +1,5 @@
 name: Notarize macOS release
+run-name: Notarize ${{ inputs.app }} ${{ inputs.tag }} (${{ inputs.request_id }})
 
 on:
   workflow_dispatch:
@@ -16,169 +17,300 @@ on:
         description: Existing release tag, for example v1.0.2
         required: true
         type: string
+      request_id:
+        description: Optional request correlation ID
+        required: false
+        default: ""
+        type: string
 
-permissions:
-  contents: read
+permissions: {}
 
 concurrency:
-  group: notarize-${{ inputs.app }}
+  group: notarize-${{ inputs.app }}-${{ inputs.tag }}
   cancel-in-progress: false
 
+env:
+  EXPECTED_BROKER_REPOSITORY: trsdn/macos-notarization-broker
+  EXPECTED_BROKER_REPOSITORY_ID: "1315404585"
+  AUTHORIZED_ACTOR_ID: "24534196"
+
 jobs:
-  notarize:
-    runs-on: macos-latest
-    timeout-minutes: 90
+  resolve:
+    name: Authorize and resolve immutable source
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      app: ${{ steps.resolve.outputs.app }}
+      tag: ${{ steps.resolve.outputs.tag }}
+      repository: ${{ steps.resolve.outputs.repository }}
+      repository_id: ${{ steps.resolve.outputs.repository_id }}
+      ref_target_sha: ${{ steps.resolve.outputs.ref_target_sha }}
+      tag_object_sha: ${{ steps.resolve.outputs.tag_object_sha }}
+      commit_sha: ${{ steps.resolve.outputs.commit_sha }}
+      version: ${{ steps.resolve.outputs.version }}
+      request_id: ${{ steps.resolve.outputs.request_id }}
+      profile_digest: ${{ steps.resolve.outputs.profile_digest }}
+      artifact_name: ${{ steps.resolve.outputs.artifact_name }}
     steps:
-      - name: Resolve fixed application profile
-        id: profile
+      - name: Authorize upstream manual dispatch
         env:
-          APP: ${{ inputs.app }}
-          TAG: ${{ inputs.tag }}
+          ACTOR_ID: ${{ github.actor_id }}
+          EVENT_NAME: ${{ github.event_name }}
+          REPOSITORY: ${{ github.repository }}
+          REPOSITORY_ID: ${{ github.event.repository.id }}
+          REF: ${{ github.ref }}
         run: |
           set -euo pipefail
-          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]] || {
-            echo "Tag must be an exact version tag such as v1.0.2."
+          [[ "$EVENT_NAME" == "workflow_dispatch" ]]
+          [[ "$REPOSITORY" == "$EXPECTED_BROKER_REPOSITORY" ]]
+          [[ "$REPOSITORY_ID" == "$EXPECTED_BROKER_REPOSITORY_ID" ]]
+          [[ "$REF" == "refs/heads/main" ]]
+          [[ "$ACTOR_ID" == "$AUTHORIZED_ACTOR_ID" ]] || {
+            echo "This broker accepts dispatches only from its fixed owner identity." >&2
             exit 1
           }
-          case "$APP" in
-            md2loop) repo="trsdn/md2loop" ;;
-            openwritr) repo="trsdn/OpenWritr" ;;
-            ptionsplus) repo="trsdn/PtionsPlus" ;;
-            teleprompter) repo="trsdn/teleprompter-mirror-macos" ;;
-            *) exit 1 ;;
-          esac
-          echo "repo=$repo" >> "$GITHUB_OUTPUT"
-          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
 
-      - name: Check out exact source tag
-        uses: actions/checkout@v4
+      - name: Check out immutable broker logic
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          repository: ${{ steps.profile.outputs.repo }}
-          ref: ${{ inputs.tag }}
-          fetch-depth: 0
+          ref: ${{ github.sha }}
           persist-credentials: false
 
-      - name: Import Developer ID certificate
+      - name: Resolve tag to full commit SHA
+        id: resolve
         env:
-          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
-          MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+          GH_TOKEN: ${{ github.token }}
+          INPUT_APP: ${{ inputs.app }}
+          INPUT_REQUEST_ID: ${{ inputs.request_id }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          python3 scripts/broker.py resolve \
+            --app "$INPUT_APP" \
+            --tag "$INPUT_TAG" \
+            --request-id "$INPUT_REQUEST_ID" \
+            --output resolution.json
+
+  build:
+    name: Build untrusted source without Apple credentials
+    needs: resolve
+    runs-on: macos-15
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - name: Check out immutable broker logic
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          path: broker
+          persist-credentials: false
+
+      - name: Check out external source at resolved commit
+        env:
+          SOURCE_REPOSITORY: ${{ needs.resolve.outputs.repository }}
+          SOURCE_SHA: ${{ needs.resolve.outputs.commit_sha }}
         run: |
           set -euo pipefail
-          [[ -n "$MACOS_CERTIFICATE" && -n "$MACOS_CERTIFICATE_PWD" ]] || {
-            echo "The broker certificate secrets are not configured."
-            exit 1
-          }
-          cert_file="$(mktemp "${RUNNER_TEMP}/certificate.XXXXXX")"
-          keychain_file="${RUNNER_TEMP}/notarization.keychain-db"
-          keychain_password="$(openssl rand -base64 32)"
-          printf '%s' "$MACOS_CERTIFICATE" | base64 --decode > "$cert_file"
-          security create-keychain -p "$keychain_password" "$keychain_file"
-          security set-keychain-settings -lut 21600 "$keychain_file"
-          security unlock-keychain -p "$keychain_password" "$keychain_file"
-          security import "$cert_file" -P "$MACOS_CERTIFICATE_PWD" -A -t cert -f pkcs12 -k "$keychain_file"
-          security set-key-partition-list -S apple-tool:,apple: -k "$keychain_password" "$keychain_file"
-          user_keychains=()
-          while IFS= read -r existing_keychain; do
-            existing_keychain="${existing_keychain#*\"}"
-            existing_keychain="${existing_keychain%\"*}"
-            [[ -n "$existing_keychain" ]] && user_keychains+=("$existing_keychain")
-          done < <(security list-keychains -d user)
-          security list-keychains -d user -s "$keychain_file" "${user_keychains[@]}"
-          identity="$(security find-identity -v -p codesigning "$keychain_file" | awk -F'"' '/Developer ID Application/ { print $2; exit }')"
-          [[ -n "$identity" ]] || {
-            echo "Developer ID Application identity not found."
-            exit 1
-          }
-          {
-            echo "CODE_SIGN_IDENTITY=$identity"
-            echo "OPENWRITR_SIGNING_IDENTITY=$identity"
-            echo "KEYCHAIN_FILE=$keychain_file"
-          } >> "$GITHUB_ENV"
-          rm -f "$cert_file"
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          git init source
+          git -C source remote add origin "https://github.com/${SOURCE_REPOSITORY}.git"
+          git -C source -c protocol.version=2 fetch --no-tags --depth=1 origin "$SOURCE_SHA"
+          git -C source checkout --detach FETCH_HEAD
+          [[ "$(git -C source rev-parse HEAD)" == "$SOURCE_SHA" ]]
+          git -C source remote remove origin
 
-      - name: Build, sign, and notarize
+      - name: Build unsigned application with broker adapter
         env:
-          APP: ${{ inputs.app }}
-          TAG: ${{ inputs.tag }}
-          VERSION: ${{ steps.profile.outputs.version }}
+          BUILD_NUMBER: ${{ github.run_number }}
+          PROFILE: ${{ needs.resolve.outputs.app }}
+          SOURCE_SHA: ${{ needs.resolve.outputs.commit_sha }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p unsigned
+          python3 broker/scripts/broker.py build \
+            --app "$PROFILE" \
+            --source source \
+            --version "$VERSION" \
+            --commit-sha "$SOURCE_SHA" \
+            --build-number "$BUILD_NUMBER" \
+            --output unsigned/unsigned-app.zip
+
+      - name: Upload untrusted unsigned bundle
+        id: upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: unsigned-${{ inputs.app }}-${{ needs.resolve.outputs.commit_sha }}
+          path: unsigned/unsigned-app.zip
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 2
+
+  preflight:
+    name: Sanitize and validate unsigned bundle
+    needs:
+      - resolve
+      - build
+    runs-on: macos-15
+    timeout-minutes: 20
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      archive_sha256: ${{ steps.validate.outputs.validated_archive_sha256 }}
+      tree_sha256: ${{ steps.validate.outputs.tree_sha256 }}
+    steps:
+      - name: Check out immutable broker logic
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          path: broker
+          persist-credentials: false
+
+      - name: Download exact unsigned artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact_id }}
+          path: untrusted
+          merge-multiple: true
+
+      - name: Validate identity and bundle structure
+        id: validate
+        env:
+          PROFILE: ${{ needs.resolve.outputs.app }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p validated
+          python3 broker/scripts/broker.py validate \
+            --app "$PROFILE" \
+            --version "$VERSION" \
+            --archive untrusted/unsigned-app.zip \
+            --extract-to preflight-work \
+            --validated-archive validated/validated-app.zip \
+            --manifest validated/preflight-manifest.json
+
+      - name: Upload immutable validated bundle
+        id: upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: validated-${{ inputs.app }}-${{ needs.resolve.outputs.commit_sha }}
+          path: validated/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 2
+
+  sign:
+    name: Sign and notarize with broker-owned logic
+    needs:
+      - resolve
+      - preflight
+    runs-on: macos-15
+    timeout-minutes: 90
+    environment: macos-signing
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Check out immutable broker logic
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          path: broker
+          persist-credentials: false
+
+      - name: Download exact validated artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ needs.preflight.outputs.artifact_id }}
+          path: validated
+          merge-multiple: true
+
+      - name: Revalidate before certificate import
+        env:
+          EXPECTED_ARCHIVE_SHA: ${{ needs.preflight.outputs.archive_sha256 }}
+          EXPECTED_TREE_SHA: ${{ needs.preflight.outputs.tree_sha256 }}
+          PROFILE: ${{ needs.resolve.outputs.app }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          python3 broker/scripts/broker.py validate \
+            --app "$PROFILE" \
+            --version "$VERSION" \
+            --archive validated/validated-app.zip \
+            --extract-to signing-input \
+            --expected-archive-sha "$EXPECTED_ARCHIVE_SHA" \
+            --expected-tree-sha "$EXPECTED_TREE_SHA"
+
+      - name: Confirm tag has not moved
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PROFILE: ${{ needs.resolve.outputs.app }}
+          REQUEST_ID: ${{ needs.resolve.outputs.request_id }}
+          SOURCE_SHA: ${{ needs.resolve.outputs.commit_sha }}
+          SOURCE_TAG: ${{ needs.resolve.outputs.tag }}
+        run: |
+          python3 broker/scripts/broker.py resolve \
+            --app "$PROFILE" \
+            --tag "$SOURCE_TAG" \
+            --request-id "$REQUEST_ID" \
+            --expect-sha "$SOURCE_SHA"
+
+      - name: Sign, notarize, and package
+        env:
+          BROKER_COMMIT_SHA: ${{ github.sha }}
+          BROKER_REPOSITORY: ${{ github.repository }}
+          EXPECTED_TREE_SHA: ${{ needs.preflight.outputs.tree_sha256 }}
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
-          TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          RELEASE_TAG: ${{ inputs.tag }}
-          RELEASE_VERSION: ${{ steps.profile.outputs.version }}
-          BUILD_NUMBER: ${{ github.run_number }}
-        run: |
-          set -euo pipefail
-          [[ -n "$APPLE_ID" && -n "$APPLE_TEAM_ID" && -n "$APPLE_APP_PASSWORD" ]] || {
-            echo "The broker Apple notarization secrets are not configured."
-            exit 1
-          }
-          chmod +x scripts/*.sh
-          case "$APP" in
-            md2loop)
-              brew install xcodegen
-              DMG_PATH="dist/md2loop-${VERSION}-macos.dmg" scripts/release_macos.sh
-              ;;
-            openwritr)
-              scripts/release_macos.sh "$TAG"
-              ;;
-            ptionsplus)
-              scripts/sign-release.sh
-              scripts/notarize.sh
-              ;;
-            teleprompter)
-              ./build-app.sh
-              app_path="dist/Teleprompter Mirror.app"
-              submission_zip="${RUNNER_TEMP}/Teleprompter-Mirror-notary.zip"
-              artifact_zip="dist/Teleprompter-Mirror-v${VERSION}-macOS-arm64.zip"
-              ditto -c -k --keepParent "$app_path" "$submission_zip"
-              xcrun notarytool submit "$submission_zip" \
-                --apple-id "$APPLE_ID" \
-                --team-id "$APPLE_TEAM_ID" \
-                --password "$APPLE_APP_PASSWORD" \
-                --wait
-              xcrun stapler staple "$app_path"
-              xcrun stapler validate "$app_path"
-              spctl --assess --type execute --verbose=4 "$app_path"
-              ditto -c -k --keepParent "$app_path" "$artifact_zip"
-              shasum -a 256 "$artifact_zip" > "${artifact_zip}.sha256"
-              ;;
-          esac
-
-      - name: Collect release artifacts
-        env:
-          APP: ${{ inputs.app }}
-          VERSION: ${{ steps.profile.outputs.version }}
+          PROFILE: ${{ needs.resolve.outputs.app }}
+          PROFILE_DIGEST: ${{ needs.resolve.outputs.profile_digest }}
+          REQUEST_ID: ${{ needs.resolve.outputs.request_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          RUN_ID: ${{ github.run_id }}
+          SOURCE_COMMIT_SHA: ${{ needs.resolve.outputs.commit_sha }}
+          SOURCE_REF_SHA: ${{ needs.resolve.outputs.ref_target_sha }}
+          SOURCE_REPOSITORY: ${{ needs.resolve.outputs.repository }}
+          SOURCE_REPOSITORY_ID: ${{ needs.resolve.outputs.repository_id }}
+          SOURCE_TAG: ${{ needs.resolve.outputs.tag }}
+          SOURCE_TAG_OBJECT_SHA: ${{ needs.resolve.outputs.tag_object_sha }}
+          VERSION: ${{ needs.resolve.outputs.version }}
         run: |
           set -euo pipefail
           mkdir broker-output
-          case "$APP" in
-            md2loop)
-              cp "dist/md2loop-${VERSION}-macos.dmg"{,.sha256} broker-output/
-              ;;
-            openwritr)
-              cp "dist/OpenWritr-v${VERSION}-macOS-arm64."{zip,zip.sha256,dmg,dmg.sha256} broker-output/
-              ;;
-            ptionsplus)
-              cp "dist/Ptions+.zip" "dist/Ptions+.dmg" "dist/Ptions+.dmg.sha256" broker-output/
-              ;;
-            teleprompter)
-              cp "dist/Teleprompter-Mirror-v${VERSION}-macOS-arm64.zip"{,.sha256} broker-output/
-              ;;
-          esac
-
-      - name: Remove temporary keychain
-        if: always()
-        run: |
-          if [[ -n "${KEYCHAIN_FILE:-}" ]]; then
-            security delete-keychain "$KEYCHAIN_FILE" 2>/dev/null || true
-          fi
+          python3 broker/scripts/broker.py sign \
+            --app "$PROFILE" \
+            --version "$VERSION" \
+            --app-root signing-input \
+            --expected-tree-sha "$EXPECTED_TREE_SHA" \
+            --profile-digest "$PROFILE_DIGEST" \
+            --preflight-manifest validated/preflight-manifest.json \
+            --output-dir broker-output \
+            --request-id "$REQUEST_ID" \
+            --source-repository "$SOURCE_REPOSITORY" \
+            --source-repository-id "$SOURCE_REPOSITORY_ID" \
+            --source-tag "$SOURCE_TAG" \
+            --source-ref-sha "$SOURCE_REF_SHA" \
+            --source-tag-object-sha "$SOURCE_TAG_OBJECT_SHA" \
+            --source-commit-sha "$SOURCE_COMMIT_SHA" \
+            --broker-repository "$BROKER_REPOSITORY" \
+            --broker-commit-sha "$BROKER_COMMIT_SHA" \
+            --run-id "$RUN_ID" \
+            --run-attempt "$RUN_ATTEMPT"
 
       - name: Upload notarized artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: ${{ inputs.app }}-${{ steps.profile.outputs.version }}
+          name: ${{ needs.resolve.outputs.artifact_name }}
           path: broker-output/
           if-no-files-found: error
+          compression-level: 0
           retention-days: 7

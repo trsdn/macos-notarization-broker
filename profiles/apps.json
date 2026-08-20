@@ -1,0 +1,113 @@
+{
+  "schema_version": 1,
+  "profiles": {
+    "md2loop": {
+      "repository": "trsdn/md2loop",
+      "repository_id": 1168645937,
+      "build_adapter": "md2loop-xcode",
+      "dependency_lock": "locks/md2loop-Package.resolved",
+      "bundle_name": "md2loop.app",
+      "bundle_identifier": "com.md2loop.app",
+      "bundle_display_name": "md2loop",
+      "executable": "md2loop",
+      "package_type": "APPL",
+      "architectures": [
+        "arm64"
+      ],
+      "minimum_system_version": "14.0",
+      "entitlements": "entitlements/md2loop.plist",
+      "dmg_volume_name": "md2loop",
+      "max_archive_bytes": 1073741824,
+      "max_uncompressed_bytes": 2147483648,
+      "max_files": 5000,
+      "artifacts": [
+        {
+          "type": "dmg",
+          "name": "md2loop-{version}-macos.dmg"
+        }
+      ]
+    },
+    "openwritr": {
+      "repository": "trsdn/OpenWritr",
+      "repository_id": 1165782217,
+      "build_adapter": "openwritr-swiftpm",
+      "bundle_name": "OpenWritr.app",
+      "bundle_identifier": "com.openwritr.app",
+      "bundle_display_name": "OpenWritr",
+      "executable": "OpenWritr",
+      "package_type": "APPL",
+      "architectures": [
+        "arm64"
+      ],
+      "minimum_system_version": "14.0",
+      "entitlements": "entitlements/openwritr.plist",
+      "dmg_volume_name": "OpenWritr",
+      "max_archive_bytes": 1073741824,
+      "max_uncompressed_bytes": 2147483648,
+      "max_files": 5000,
+      "artifacts": [
+        {
+          "type": "zip",
+          "name": "OpenWritr-v{version}-macOS-arm64.zip"
+        },
+        {
+          "type": "dmg",
+          "name": "OpenWritr-v{version}-macOS-arm64.dmg"
+        }
+      ]
+    },
+    "ptionsplus": {
+      "repository": "trsdn/PtionsPlus",
+      "repository_id": 1165009675,
+      "build_adapter": "ptionsplus-xcode",
+      "bundle_name": "Ptions+.app",
+      "bundle_identifier": "com.torsten.Ptions-Plus",
+      "bundle_display_name": "Ptions+",
+      "executable": "Ptions+",
+      "package_type": "APPL",
+      "architectures": [
+        "arm64"
+      ],
+      "minimum_system_version": "13.0",
+      "entitlements": "entitlements/ptionsplus.plist",
+      "dmg_volume_name": "Ptions+",
+      "max_archive_bytes": 1073741824,
+      "max_uncompressed_bytes": 2147483648,
+      "max_files": 5000,
+      "artifacts": [
+        {
+          "type": "zip",
+          "name": "Ptions+.zip"
+        },
+        {
+          "type": "dmg",
+          "name": "Ptions+.dmg"
+        }
+      ]
+    },
+    "teleprompter": {
+      "repository": "trsdn/teleprompter-mirror-macos",
+      "repository_id": 1339874326,
+      "build_adapter": "teleprompter-swiftpm",
+      "bundle_name": "Teleprompter Mirror.app",
+      "bundle_identifier": "com.github.trsdn.TeleprompterMirror",
+      "bundle_display_name": "Teleprompter Mirror",
+      "executable": "TeleprompterMirror",
+      "package_type": "APPL",
+      "architectures": [
+        "arm64"
+      ],
+      "minimum_system_version": "13.0",
+      "entitlements": "entitlements/teleprompter.plist",
+      "max_archive_bytes": 1073741824,
+      "max_uncompressed_bytes": 2147483648,
+      "max_files": 5000,
+      "artifacts": [
+        {
+          "type": "zip",
+          "name": "Teleprompter-Mirror-v{version}-macOS-arm64.zip"
+        }
+      ]
+    }
+  }
+}
