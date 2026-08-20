@@ -39,11 +39,18 @@ are configured on the repository and must stay in place:
 2. Protect `main` with a ruleset that:
    - requires pull requests for changes;
    - requires the `Tests and static validation` and `Unit tests on macOS` status
-     checks to pass;
-   - requires review by a trusted owner for `.github/workflows/**`,
-     `scripts/**`, and `profiles/**`;
+     checks to pass on the merge candidate;
+   - dismisses stale approvals on new pushes and requires review threads to be
+     resolved;
    - blocks force pushes and branch deletion; and
-   - limits bypass permission to the minimum number of trusted administrators.
+   - limits bypass permission to the repository administrator role.
+
+   `.github/CODEOWNERS` assigns `.github/workflows/**`, `scripts/**`, and
+   `profiles/**` to the repository owner. While a single maintainer owns the
+   repository, code owner approval cannot be a hard ruleset requirement without
+   forcing a bypass on every merge, which would also bypass the required status
+   checks. Enable `require_code_owner_review` as soon as a second trusted
+   maintainer exists.
 3. Keep the five Apple values only in the `macos-signing` environment.
 4. Restrict `macos-signing` to the `main` branch and configure a required
    reviewer. If a sole maintainer must self-approve, keep

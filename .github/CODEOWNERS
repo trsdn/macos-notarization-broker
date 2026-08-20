@@ -1,0 +1,8 @@
+# The repository owner reviews everything. Privileged paths are listed
+# explicitly so a future collaborator cannot merge them without owner review.
+
+*                       @trsdn
+/.github/workflows/     @trsdn
+/scripts/               @trsdn
+/profiles/              @trsdn
+/SECURITY.md            @trsdn
