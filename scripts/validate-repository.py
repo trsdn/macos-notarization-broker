@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import sys
 from pathlib import Path
@@ -11,6 +12,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 WORKFLOW_DIR = ROOT / ".github" / "workflows"
 WORKFLOW = WORKFLOW_DIR / "notarize.yml"
+PROFILE_FILE = ROOT / "profiles" / "apps.json"
+REQUEST_SCRIPT = ROOT / "scripts" / "request.sh"
 PINNED_ACTION = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}")
 PERMISSION_VALUE = re.compile(
     r"^\s+[a-z-]+:\s*(read|write|none|read-all|write-all)\s*$", re.MULTILINE
@@ -143,10 +146,54 @@ def validate_notarize_workflow() -> None:
         require(marker in workflow, f"authorization gate is missing: {marker}")
 
 
+def declared_profiles() -> set[str]:
+    with PROFILE_FILE.open("r", encoding="utf-8") as handle:
+        return set(json.load(handle)["profiles"])
+
+
+def validate_profile_choices() -> None:
+    """Keep every hand-maintained copy of the profile list in step with apps.json.
+
+    The dispatch dropdown and the request client each repeat the profile names.
+    A profile missing from either one is silently undispatchable, which is a
+    configuration failure rather than a policy failure, so it is caught here
+    instead of being left to review.
+    """
+
+    profiles = declared_profiles()
+    require(profiles, "no profiles are declared")
+
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    options_block = workflow.split("\n        options:\n", 1)[1].split("\n      tag:", 1)[0]
+    options = set(re.findall(r"^\s*-\s*([a-z0-9-]+)\s*$", options_block, re.MULTILINE))
+    require(
+        options == profiles,
+        f"notarize.yml app choices do not match apps.json: {sorted(options ^ profiles)}",
+    )
+
+    request = REQUEST_SCRIPT.read_text(encoding="utf-8")
+    listed = re.findall(
+        r"^  ([a-z0-9|-]+)\) ;;$|\{([a-z0-9|-]+)\} vX\.Y\.Z", request, re.MULTILINE
+    )
+    # Both the case arm and the usage message must be found; a loop over zero
+    # matches would otherwise pass this check silently after a reformat.
+    require(
+        len(listed) == 2,
+        f"request.sh no longer exposes a recognisable profile list ({len(listed)} found)",
+    )
+    for match in listed:
+        names = set((match[0] or match[1]).split("|"))
+        require(
+            names == profiles,
+            f"request.sh profile list does not match apps.json: {sorted(names ^ profiles)}",
+        )
+
+
 def main() -> int:
     paths = workflow_paths()
     require(WORKFLOW in paths, "notarization workflow is missing")
     validate_notarize_workflow()
+    validate_profile_choices()
     for path in paths:
         if path != WORKFLOW:
             validate_supporting_workflow(path)

@@ -6,6 +6,7 @@ import io
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -111,6 +112,54 @@ class RepositoryValidatorTests(unittest.TestCase):
         self.assert_workflow_rejected(
             SAFE_WORKFLOW.replace("  pull_request:", "  pull_request_target:")
         )
+
+
+class ProfileChoiceConsistencyTests(unittest.TestCase):
+    """The profile list is repeated by hand in three files; keep them in step."""
+
+    def run_with(self, *, workflow: str | None = None, request: str | None = None) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            patches = {}
+            if workflow is not None:
+                path = root / "notarize.yml"
+                path.write_text(workflow, encoding="utf-8")
+                patches["WORKFLOW"] = path
+            if request is not None:
+                path = root / "request.sh"
+                path.write_text(request, encoding="utf-8")
+                patches["REQUEST_SCRIPT"] = path
+            with contextlib.ExitStack() as stack:
+                for name, value in patches.items():
+                    stack.enter_context(mock.patch.object(validator, name, value))
+                validator.validate_profile_choices()
+
+    def test_committed_lists_agree(self) -> None:
+        validator.validate_profile_choices()
+
+    def test_profile_missing_from_the_dispatch_dropdown_is_rejected(self) -> None:
+        workflow = validator.WORKFLOW.read_text(encoding="utf-8")
+        with self.assertRaises(AssertionError):
+            self.run_with(workflow=workflow.replace("          - spacemender\n", ""))
+
+    def test_unknown_profile_in_the_dispatch_dropdown_is_rejected(self) -> None:
+        workflow = validator.WORKFLOW.read_text(encoding="utf-8")
+        with self.assertRaises(AssertionError):
+            self.run_with(
+                workflow=workflow.replace(
+                    "          - spacemender\n",
+                    "          - spacemender\n          - not-a-profile\n",
+                )
+            )
+
+    def test_profile_missing_from_the_request_client_is_rejected(self) -> None:
+        request = validator.REQUEST_SCRIPT.read_text(encoding="utf-8")
+        with self.assertRaises(AssertionError):
+            self.run_with(request=request.replace("spacemender|", ""))
+
+    def test_unrecognisable_request_client_is_rejected_rather_than_skipped(self) -> None:
+        with self.assertRaises(AssertionError):
+            self.run_with(request="#!/usr/bin/env bash\necho hello\n")
 
 
 if __name__ == "__main__":

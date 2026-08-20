@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import inspect
 import json
 import plistlib
 import stat
@@ -74,7 +75,7 @@ class ProfileTests(unittest.TestCase):
         profiles = broker.load_profiles()
         self.assertEqual(
             set(profiles),
-            {"md2loop", "openwritr", "ptionsplus", "teleprompter"},
+            {"md2loop", "openwritr", "ptionsplus", "spacemender", "teleprompter"},
         )
 
     def test_profile_repository_identities_are_fixed(self) -> None:
@@ -82,6 +83,7 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(profiles["md2loop"]["repository_id"], 1168645937)
         self.assertEqual(profiles["openwritr"]["repository_id"], 1165782217)
         self.assertEqual(profiles["ptionsplus"]["repository_id"], 1165009675)
+        self.assertEqual(profiles["spacemender"]["repository_id"], 1339151393)
         self.assertEqual(profiles["teleprompter"]["repository_id"], 1339874326)
 
     def test_artifact_names_preserve_existing_release_contracts(self) -> None:
@@ -99,10 +101,128 @@ class ProfileTests(unittest.TestCase):
             ],
         )
         self.assertEqual(names["ptionsplus"], ["Ptions+.zip", "Ptions+.dmg"])
+        self.assertEqual(names["spacemender"], ["SpaceMender.zip"])
         self.assertEqual(
             names["teleprompter"],
             ["Teleprompter-Mirror-v{version}-macOS-arm64.zip"],
         )
+
+
+class SpaceMenderProfileTests(unittest.TestCase):
+    """Pin the shape of the only profile that ships a privileged nested helper."""
+
+    def setUp(self) -> None:
+        self.profile = broker.get_profile("spacemender")
+        self.specs = broker.nested_executables(self.profile)
+
+    def test_declares_exactly_one_nested_helper_with_its_launch_daemon(self) -> None:
+        self.assertEqual(len(self.specs), 1)
+        spec = self.specs[0]
+        self.assertEqual(spec["path"], "Contents/MacOS/SpaceMenderDefenderHelper")
+        self.assertEqual(spec["identifier"], "app.spacemender.SpaceMender.DefenderHelper")
+        self.assertEqual(
+            spec["launch_daemon"],
+            {
+                "path": (
+                    "Contents/Library/LaunchDaemons/"
+                    "app.spacemender.SpaceMender.DefenderHelper.plist"
+                ),
+                "label": "app.spacemender.SpaceMender.DefenderHelper",
+            },
+        )
+
+    def test_embedded_client_requirement_renders_to_the_real_team_id(self) -> None:
+        # SpaceMender's helper embeds this string after Xcode expands
+        # $(DEVELOPMENT_TEAM). If the rendered policy and the shipped binary ever
+        # disagree, the helper rejects its own app at runtime, so the expected
+        # value is pinned literally rather than rebuilt from the profile.
+        spec = self.specs[0]
+        rendered = {
+            key: broker.render_expected_value(template, self.profile, spec)
+            for key, template in spec["embedded_info_plist"].items()
+        }
+        self.assertEqual(
+            rendered,
+            {
+                "CFBundleIdentifier": "app.spacemender.SpaceMender.DefenderHelper",
+                "SpaceMenderAuthorizedClientRequirement": (
+                    'anchor apple generic and identifier "app.spacemender.SpaceMender" '
+                    'and certificate leaf[subject.OU] = "G69Z5BNY97"'
+                ),
+            },
+        )
+
+    def test_helper_signs_under_its_own_reviewed_entitlements(self) -> None:
+        spec = self.specs[0]
+        self.assertNotEqual(spec["entitlements"], self.profile["entitlements"])
+        for relative in (self.profile["entitlements"], spec["entitlements"]):
+            with self.subTest(entitlements=relative):
+                with broker.safe_profile_path(relative).open("rb") as handle:
+                    self.assertEqual(plistlib.load(handle), {})
+
+    def test_team_id_is_declared_and_well_formed(self) -> None:
+        self.assertEqual(self.profile["team_id"], "G69Z5BNY97")
+        self.assertRegex(self.profile["team_id"], broker.TEAM_ID_PATTERN)
+
+    def test_only_spacemender_may_ship_nested_code(self) -> None:
+        nested = {
+            name
+            for name, profile in broker.load_profiles().items()
+            if broker.nested_executables(profile)
+        }
+        self.assertEqual(nested, {"spacemender"})
+
+
+class BuildAdapterTests(unittest.TestCase):
+    def test_every_declared_adapter_has_a_dispatch_branch(self) -> None:
+        # load_profiles() only checks an adapter against an allowlist. Without
+        # this, adding a profile and forgetting its dispatch branch stays
+        # invisible until the build job runs inside the real pipeline.
+        source = inspect.getsource(broker.command_build)
+        for name, profile in sorted(broker.load_profiles().items()):
+            with self.subTest(profile=name):
+                self.assertIn(f'adapter == "{profile["build_adapter"]}"', source)
+
+    def test_unknown_adapter_is_rejected(self) -> None:
+        with self.assertRaises(broker.BrokerError):
+            self.load_with_adapter("spacemender", "spacemender-make")
+
+    def test_spacemender_builds_the_committed_xcode_project_with_its_team_id(self) -> None:
+        profile = broker.get_profile("spacemender")
+        calls: list[list[str]] = []
+
+        def fake_run(command, **kwargs):  # type: ignore[no-untyped-def]
+            calls.append(command)
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "source"
+            (source / "SpaceMender.xcodeproj").mkdir(parents=True)
+            (source / "SpaceMender.xcodeproj" / "project.pbxproj").write_text("", encoding="utf-8")
+            work = Path(temporary) / "work"
+            work.mkdir()
+            with mock.patch.object(broker, "run", side_effect=fake_run):
+                broker.build_spacemender(source, work, profile, "1.2.3", "42")
+
+        self.assertEqual(len(calls), 1)
+        command = calls[0]
+        self.assertEqual(command[:2], ["xcodebuild", "-project"])
+        self.assertIn("SpaceMender.xcodeproj", command)
+        # The helper embeds $(DEVELOPMENT_TEAM) into its client requirement at
+        # compile time, so both spellings of the Team ID must reach xcodebuild.
+        self.assertIn("SPACEMENDER_TEAM_ID=G69Z5BNY97", command)
+        self.assertIn("DEVELOPMENT_TEAM=G69Z5BNY97", command)
+        # The build job holds no certificate; signing happens later.
+        self.assertIn("CODE_SIGNING_ALLOWED=NO", command)
+
+    def load_with_adapter(self, profile_name: str, adapter: str) -> dict:
+        document = json.loads(broker.PROFILE_FILE.read_text(encoding="utf-8"))
+        document["profiles"][profile_name]["build_adapter"] = adapter
+        with tempfile.TemporaryDirectory() as temporary:
+            replacement = Path(temporary) / "apps.json"
+            replacement.write_text(json.dumps(document), encoding="utf-8")
+            with mock.patch.object(broker, "PROFILE_FILE", replacement):
+                return broker.load_profiles()
 
 
 class InputValidationTests(unittest.TestCase):
@@ -657,6 +777,116 @@ class NestedBundleValidationTests(BundleFixtureMixin, unittest.TestCase):
                     )
                 with self.assertRaises(broker.BrokerError):
                     self.validate(self.app, self.profile)
+
+
+class SpaceMenderBundleValidationTests(BundleFixtureMixin, unittest.TestCase):
+    """Exercise preflight against the committed profile, not a synthetic one.
+
+    Every other nested-code test uses an invented "Demo" profile, which proves
+    the mechanism but not that the strings a reviewer actually approved in
+    ``profiles/apps.json`` describe the bundle SpaceMender really produces.
+    """
+
+    TEAM_ID = "G69Z5BNY97"
+    HELPER = "Contents/MacOS/SpaceMenderDefenderHelper"
+    DAEMON = "Contents/Library/LaunchDaemons/app.spacemender.SpaceMender.DefenderHelper.plist"
+
+    def setUp(self) -> None:
+        self.lipo_output = "arm64"
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.profile = broker.get_profile("spacemender")
+        self.app = self.build_spacemender_bundle()
+
+    def helper_image(self, team_id: str) -> bytes:
+        return macho_with_info_plist(
+            plistlib.dumps(
+                {
+                    "CFBundleIdentifier": "app.spacemender.SpaceMender.DefenderHelper",
+                    "SpaceMenderAuthorizedClientRequirement": (
+                        'anchor apple generic and identifier "app.spacemender.SpaceMender" '
+                        f'and certificate leaf[subject.OU] = "{team_id}"'
+                    ),
+                }
+            )
+        )
+
+    def build_spacemender_bundle(self, team_id: str | None = None) -> Path:
+        app = self.root / "SpaceMender.app"
+        macos = app / "Contents" / "MacOS"
+        macos.mkdir(parents=True)
+        (app / "Contents" / "Resources").mkdir(parents=True)
+        daemons = app / self.DAEMON
+        daemons.parent.mkdir(parents=True)
+
+        (macos / "SpaceMender").write_bytes(self.ARM64_MACHO)
+        (macos / "SpaceMender").chmod(0o755)
+        helper = app / self.HELPER
+        helper.write_bytes(self.helper_image(team_id or self.TEAM_ID))
+        helper.chmod(0o755)
+        self.write_daemon({
+            "Label": "app.spacemender.SpaceMender.DefenderHelper",
+            "BundleProgram": self.HELPER,
+        }, app)
+        with (app / "Contents" / "Info.plist").open("wb") as handle:
+            plistlib.dump(
+                {
+                    "CFBundleIdentifier": "app.spacemender.SpaceMender",
+                    "CFBundleExecutable": "SpaceMender",
+                    "CFBundlePackageType": "APPL",
+                    "CFBundleShortVersionString": "1.2.3",
+                    "CFBundleVersion": "1",
+                    "CFBundleDisplayName": "SpaceMender",
+                    "LSMinimumSystemVersion": "14.0",
+                },
+                handle,
+            )
+        return app
+
+    def write_daemon(self, job: dict, app: Path | None = None) -> None:
+        with ((app or self.app) / self.DAEMON).open("wb") as handle:
+            plistlib.dump(job, handle)
+
+    def test_a_spacemender_shaped_bundle_passes_the_committed_profile(self) -> None:
+        result = self.validate(self.app, self.profile)
+        record = result["nested_executables"][0]
+        self.assertEqual(record["path"], self.HELPER)
+        self.assertEqual(record["identifier"], "app.spacemender.SpaceMender.DefenderHelper")
+        self.assertEqual(record["sha256"], broker.sha256_file(self.app / self.HELPER))
+        self.assertEqual(
+            record["launch_daemon"]["label"], "app.spacemender.SpaceMender.DefenderHelper"
+        )
+
+    def test_helper_built_without_a_team_id_is_rejected(self) -> None:
+        # The exact failure the issue predicted: SPACEMENDER_TEAM_ID defaults to
+        # "" in project.yml, so a helper compiled without it embeds subject.OU
+        # = "" and would refuse to talk to its own app after notarization.
+        (self.app / self.HELPER).write_bytes(self.helper_image(""))
+        with self.assertRaises(broker.BrokerError):
+            self.validate(self.app, self.profile)
+
+    def test_helper_built_for_another_team_is_rejected(self) -> None:
+        (self.app / self.HELPER).write_bytes(self.helper_image("ABCDE12345"))
+        with self.assertRaises(broker.BrokerError):
+            self.validate(self.app, self.profile)
+
+    def test_daemon_pointing_away_from_the_declared_helper_is_rejected(self) -> None:
+        self.write_daemon(
+            {
+                "Label": "app.spacemender.SpaceMender.DefenderHelper",
+                "BundleProgram": "Contents/MacOS/SpaceMender",
+            }
+        )
+        with self.assertRaises(broker.BrokerError):
+            self.validate(self.app, self.profile)
+
+    def test_an_extra_undeclared_helper_is_still_rejected(self) -> None:
+        smuggled = self.app / "Contents" / "MacOS" / "SpaceMenderExtraHelper"
+        smuggled.write_bytes(self.ARM64_MACHO)
+        smuggled.chmod(0o755)
+        with self.assertRaises(broker.BrokerError):
+            self.validate(self.app, self.profile)
 
 
 class SignedPayloadComparisonTests(BundleFixtureMixin, unittest.TestCase):

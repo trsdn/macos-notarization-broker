@@ -96,6 +96,7 @@ def load_profiles() -> dict[str, Any]:
         "md2loop-xcode",
         "openwritr-swiftpm",
         "ptionsplus-xcode",
+        "spacemender-xcode",
         "teleprompter-swiftpm",
     }
     for name, profile in profiles.items():
@@ -584,6 +585,38 @@ def build_ptionsplus(
     return derived_data / "Build" / "Products" / "Release" / profile["bundle_name"]
 
 
+def build_spacemender(
+    source: Path, work: Path, profile: dict[str, Any], version: str, build_number: str
+) -> Path:
+    ensure_source_file(source, "SpaceMender.xcodeproj/project.pbxproj")
+    derived_data = work / "DerivedData"
+    # The project reads its Team ID from SPACEMENDER_TEAM_ID and derives
+    # DEVELOPMENT_TEAM from it, so pass both rather than relying on the
+    # precedence of a command-line override against the derived setting. The
+    # privileged helper preprocesses DEVELOPMENT_TEAM into the client
+    # requirement it embeds, so an empty value would ship a helper that rejects
+    # its own app.
+    run(
+        [
+            "xcodebuild",
+            "-project",
+            "SpaceMender.xcodeproj",
+            "-scheme",
+            "SpaceMender",
+            "-configuration",
+            "Release",
+            "-derivedDataPath",
+            str(derived_data),
+            "clean",
+            "build",
+            f"SPACEMENDER_TEAM_ID={profile['team_id']}",
+        ]
+        + xcodebuild_settings(profile, version, build_number),
+        cwd=source,
+    )
+    return derived_data / "Build" / "Products" / "Release" / profile["bundle_name"]
+
+
 def assemble_teleprompter(source: Path, work: Path, profile: dict[str, Any]) -> Path:
     executable = swift_build(source, "TeleprompterMirror", require_lock=False)
     app = work / profile["bundle_name"]
@@ -623,6 +656,8 @@ def command_build(args: argparse.Namespace) -> None:
             built_app = assemble_openwritr(source, work, profile)
         elif adapter == "ptionsplus-xcode":
             built_app = build_ptionsplus(source, work, profile, version, args.build_number)
+        elif adapter == "spacemender-xcode":
+            built_app = build_spacemender(source, work, profile, version, args.build_number)
         elif adapter == "teleprompter-swiftpm":
             built_app = assemble_teleprompter(source, work, profile)
         else:

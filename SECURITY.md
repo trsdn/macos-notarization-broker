@@ -2,8 +2,9 @@
 
 ## Trust model
 
-The four application repositories and everything they fetch during compilation
-are untrusted. Their code may run only in the `build` job, which has:
+The application repositories listed in `profiles/apps.json`, and everything they
+fetch during compilation, are untrusted. Their code may run only in the `build`
+job, which has:
 
 - no Apple secrets;
 - no Developer ID certificate;
@@ -223,7 +224,10 @@ Two checks keep the declared value honest:
 The second check is opt-in policy: `embedded_info_plist` is an optional field,
 so a profile that omits it gets no embedded-team comparison. A profile that
 ships a nested executable embedding a client code requirement must declare the
-expectation, otherwise only the first check applies.
+expectation, otherwise only the first check applies. The `spacemender` profile
+is the worked example: its helper embeds
+`SpaceMenderAuthorizedClientRequirement`, so the profile pins that exact string
+with `{bundle_identifier}` and `{team_id}` placeholders.
 
 ## Residual risks
 
@@ -234,13 +238,14 @@ expectation, otherwise only the first check applies.
   but do not eliminate this risk.
 - md2loop uses a broker-owned `Package.resolved` because its tagged source did
   not contain one. Future dependency changes require a reviewed lock update.
-- OpenWritr uses its source-committed dependency lock. Teleprompter Mirror and
-  Ptions+ currently have no external package resolution in their release
-  builds.
+- OpenWritr uses its source-committed dependency lock. Teleprompter Mirror,
+  Ptions+, and SpaceMender currently have no external package resolution in
+  their release builds.
 - Structural validation does not prove that application behavior is benign. A
   declared nested executable is validated and pinned, not vetted; a privileged
   helper still runs source-repository logic with the privileges its bundled
-  launch daemon requests.
+  launch daemon requests. SpaceMender is currently the only profile in that
+  position, and its helper is the highest-privilege code this broker signs.
 - Apple credentials must still be rotated if the environment, certificate, or
   maintainer account is compromised.
 
