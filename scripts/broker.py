@@ -852,26 +852,54 @@ def imported_identity(keychain: Path) -> str:
     return identities[0]
 
 
+def parse_codesign_plist(payload: bytes) -> Any | None:
+    xml_index = payload.find(b"<?xml")
+    binary_index = payload.find(b"bplist")
+    indexes = [
+        (index, format_name)
+        for index, format_name in ((xml_index, "xml"), (binary_index, "binary"))
+        if index >= 0
+    ]
+    if not indexes:
+        return None
+
+    start, format_name = min(indexes)
+    plist_payload = payload[start:]
+    if format_name == "xml":
+        closing_tag = b"</plist>"
+        end = plist_payload.find(closing_tag)
+        if end < 0:
+            raise ValueError("XML plist is missing its closing </plist> tag")
+        plist_payload = plist_payload[: end + len(closing_tag)]
+    return plistlib.loads(plist_payload)
+
+
 def read_signed_entitlements(app_path: Path) -> dict[str, Any]:
     completed = subprocess.run(
-        ["codesign", "-d", "--entitlements", ":-", str(app_path)],
+        ["codesign", "-d", "--xml", "--entitlements", "-", str(app_path)],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         check=False,
     )
-    payload = completed.stdout + completed.stderr
-    xml_index = payload.find(b"<?xml")
-    binary_index = payload.find(b"bplist")
-    indexes = [index for index in (xml_index, binary_index) if index >= 0]
-    if not indexes:
-        return {}
-    try:
-        value = plistlib.loads(payload[min(indexes) :])
-    except Exception as error:
-        fail(f"Could not parse signed entitlements: {error}")
-    if not isinstance(value, dict):
-        fail("Signed entitlements are not a dictionary.")
-    return value
+    if completed.returncode != 0:
+        fail("Could not read signed entitlements with codesign.")
+
+    parse_errors: list[Exception] = []
+    for payload in (completed.stdout, completed.stderr):
+        try:
+            value = parse_codesign_plist(payload)
+        except Exception as error:
+            parse_errors.append(error)
+            continue
+        if value is None:
+            continue
+        if not isinstance(value, dict):
+            fail("Signed entitlements are not a dictionary.")
+        return value
+
+    if parse_errors:
+        fail(f"Could not parse signed entitlements: {parse_errors[0]}")
+    return {}
 
 
 def verify_signed_app(

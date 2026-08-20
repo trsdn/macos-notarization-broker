@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import importlib.util
 import stat
+import subprocess
 import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -111,6 +113,63 @@ class ArchiveValidationTests(unittest.TestCase):
                 handle.writestr("Teleprompter Mirror.app/Contents/._Info.plist", "bad")
             with self.assertRaises(broker.BrokerError):
                 broker.inspect_zip(archive, self.profile)
+
+
+class SignedEntitlementsTests(unittest.TestCase):
+    ENTITLEMENTS_XML = (
+        b'<?xml version="1.0" encoding="UTF-8"?>'
+        b'<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" '
+        b'"https://www.apple.com/DTDs/PropertyList-1.0.dtd">'
+        b'<plist version="1.0"><dict/></plist>\n'
+    )
+
+    def test_codesign_diagnostics_are_not_appended_to_stdout_plist(self) -> None:
+        completed = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=self.ENTITLEMENTS_XML,
+            stderr=(
+                b"Executable=/tmp/Teleprompter Mirror.app/Contents/MacOS/"
+                b"TeleprompterMirror\n"
+            ),
+        )
+        with mock.patch.object(
+            broker.subprocess, "run", return_value=completed
+        ) as codesign:
+            entitlements = broker.read_signed_entitlements(
+                Path("/tmp/Teleprompter Mirror.app")
+            )
+
+        self.assertEqual(entitlements, {})
+        codesign.assert_called_once_with(
+            [
+                "codesign",
+                "-d",
+                "--xml",
+                "--entitlements",
+                "-",
+                "/tmp/Teleprompter Mirror.app",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+
+    def test_xml_plist_is_bounded_when_codesign_uses_stderr(self) -> None:
+        completed = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=b"",
+            stderr=(
+                b"Executable=/tmp/Test.app/Contents/MacOS/Test\n"
+                + self.ENTITLEMENTS_XML
+                + b"codesign diagnostic after plist\n"
+            ),
+        )
+        with mock.patch.object(broker.subprocess, "run", return_value=completed):
+            entitlements = broker.read_signed_entitlements(Path("/tmp/Test.app"))
+
+        self.assertEqual(entitlements, {})
 
 
 if __name__ == "__main__":
