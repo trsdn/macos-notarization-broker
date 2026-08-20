@@ -211,11 +211,17 @@ unreachable from the build and preflight jobs;
 
 Two checks keep the declared value honest:
 
-- the secretless preflight compares the declared Team ID against the value the
-  build actually embedded in each nested binary, so a helper compiled with an
-  empty or wrong team cannot reach the signing job; and
 - the privileged job refuses to sign when `team_id` does not equal
-  `APPLE_TEAM_ID`.
+  `APPLE_TEAM_ID`; and
+- when a profile declares an `embedded_info_plist` expectation containing a
+  `{team_id}` placeholder, the secretless preflight also compares the declared
+  Team ID against the value the build actually embedded in that nested binary,
+  so a helper compiled with an empty or wrong team cannot reach the signing job.
+
+The second check is opt-in policy: `embedded_info_plist` is an optional field,
+so a profile that omits it gets no embedded-team comparison. A profile that
+ships a nested executable embedding a client code requirement must declare the
+expectation, otherwise only the first check applies.
 
 ## Residual risks
 
