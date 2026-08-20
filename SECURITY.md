@@ -21,14 +21,25 @@ The broker validates identity and structure, not application behavior. An
 authorized release request can still sign malicious application logic if it is
 present in the resolved commit or its pinned build dependencies.
 
-## Required repository settings before public release
+The repository also runs a continuous integration workflow
+(`.github/workflows/ci.yml`) on pull requests and pushes to `main`. It is
+deliberately outside the signing trust boundary: it has no Apple secrets, no
+protected environment, and read-only permissions, and it only runs the tests and
+static checks in this repository. `scripts/validate-repository.py` fails if any
+workflow other than `notarize.yml` references a secret, uses an environment,
+grants a non-read permission, uses `pull_request_target`, uses an unpinned
+action, or interpolates a GitHub expression into a shell command.
 
-The checked-in workflow is only one part of the control plane. Configure these
-settings before changing repository visibility:
+## Required repository settings
+
+The checked-in workflow is only one part of the control plane. These settings
+are configured on the repository and must stay in place:
 
 1. Keep `main` as the default branch.
 2. Protect `main` with a ruleset that:
    - requires pull requests for changes;
+   - requires the `Tests and static validation` and `Unit tests on macOS` status
+     checks to pass;
    - requires review by a trusted owner for `.github/workflows/**`,
      `scripts/**`, and `profiles/**`;
    - blocks force pushes and branch deletion; and
@@ -41,7 +52,9 @@ settings before changing repository visibility:
 5. Remove old repository-level Apple secrets.
 6. Allow only GitHub-owned actions. The workflow additionally pins every
    action to a full commit SHA.
-7. Grant write/admin access only to trusted maintainers. The workflow itself
+7. Keep Dependabot alerts, Dependabot security updates, secret scanning, and
+   secret scanning push protection enabled.
+8. Grant write/admin access only to trusted maintainers. The workflow itself
    accepts dispatch only when all of these are true:
    - event is `workflow_dispatch`;
    - repository is `trsdn/macos-notarization-broker`;
@@ -70,13 +83,18 @@ This repository does not automate or change repository visibility.
 
 ## Fork and outside-user behavior
 
-There are no `pull_request`, `pull_request_target`, `push`, or scheduled
-triggers. GitHub requires write access to dispatch an upstream manual workflow,
-and the workflow has an additional fixed actor gate.
+The notarization workflow has no `pull_request`, `pull_request_target`, `push`,
+or scheduled triggers. GitHub requires write access to dispatch an upstream
+manual workflow, and the workflow has an additional fixed actor gate.
 
 A public fork can modify and run its own copy of the workflow, but a fork does
 not receive the upstream `macos-signing` environment or its secrets. Its
 repository numeric ID also fails the upstream identity gate.
+
+A pull request from a fork does run the CI workflow. That workflow is secretless
+and read-only, uses `pull_request` rather than `pull_request_target`, and
+therefore executes untrusted contributor code only in a disposable, unprivileged
+runner with no access to repository secrets or the `GITHUB_TOKEN` write scopes.
 
 ## Tag and artifact integrity
 
@@ -124,7 +142,20 @@ and pre-existing identity-backed signatures.
 - Apple credentials must still be rotated if the environment, certificate, or
   maintainer account is compromised.
 
+## Dependency updates
+
+Actions are pinned to full commit SHAs and updated weekly through Dependabot
+(`.github/dependabot.yml`), reviewed like any other change. Broker-owned build
+locks under `profiles/locks/` change only through a manual, reviewed pull
+request. Dependabot alerts and Dependabot security updates are enabled. The full
+process, including what must never be loosened, is documented in
+[CONTRIBUTING.md](CONTRIBUTING.md#dependency-update-process).
+
 ## Reporting a vulnerability
 
-Do not include Apple credentials, certificates, or private workflow logs in a
-public issue. Use the repository owner's private security-reporting channel.
+Report suspected vulnerabilities privately through GitHub Security Advisories:
+[Report a vulnerability](https://github.com/trsdn/macos-notarization-broker/security/advisories/new).
+
+Do not open a public issue, and do not include Apple credentials, certificates,
+or private workflow logs in any report. Expect an initial response within seven
+days. Please allow a fix to ship before public disclosure.
