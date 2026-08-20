@@ -2,7 +2,7 @@
 
 ## Trust model
 
-The four application repositories and everything they fetch during compilation
+The application repositories and everything they fetch during compilation
 are untrusted. Their code may run only in the `build` job, which has:
 
 - no Apple secrets;

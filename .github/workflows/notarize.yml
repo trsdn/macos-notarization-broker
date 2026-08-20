@@ -12,6 +12,7 @@ on:
           - md2loop
           - openwritr
           - ptionsplus
+          - spacemender
           - teleprompter
       tag:
         description: Existing release tag, for example v1.0.2

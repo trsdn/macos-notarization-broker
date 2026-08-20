@@ -74,7 +74,7 @@ class ProfileTests(unittest.TestCase):
         profiles = broker.load_profiles()
         self.assertEqual(
             set(profiles),
-            {"md2loop", "openwritr", "ptionsplus", "teleprompter"},
+            {"md2loop", "openwritr", "ptionsplus", "spacemender", "teleprompter"},
         )
 
     def test_profile_repository_identities_are_fixed(self) -> None:
@@ -82,6 +82,7 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(profiles["md2loop"]["repository_id"], 1168645937)
         self.assertEqual(profiles["openwritr"]["repository_id"], 1165782217)
         self.assertEqual(profiles["ptionsplus"]["repository_id"], 1165009675)
+        self.assertEqual(profiles["spacemender"]["repository_id"], 1339151393)
         self.assertEqual(profiles["teleprompter"]["repository_id"], 1339874326)
 
     def test_artifact_names_preserve_existing_release_contracts(self) -> None:
@@ -100,8 +101,56 @@ class ProfileTests(unittest.TestCase):
         )
         self.assertEqual(names["ptionsplus"], ["Ptions+.zip", "Ptions+.dmg"])
         self.assertEqual(
+            names["spacemender"],
+            [
+                "SpaceMender-v{version}-macOS-arm64.zip",
+                "SpaceMender-v{version}-macOS-arm64.dmg",
+            ],
+        )
+        self.assertEqual(
             names["teleprompter"],
             ["Teleprompter-Mirror-v{version}-macOS-arm64.zip"],
+        )
+
+    def test_spacemender_is_the_only_profile_shipping_nested_code(self) -> None:
+        profiles = broker.load_profiles()
+        shipping = {
+            name for name, profile in profiles.items() if profile.get("nested_executables")
+        }
+        self.assertEqual(shipping, {"spacemender"})
+
+    def test_spacemender_declares_exactly_one_privileged_helper(self) -> None:
+        profile = broker.load_profiles()["spacemender"]
+        specs = profile["nested_executables"]
+        self.assertEqual(len(specs), 1)
+        spec = specs[0]
+        self.assertEqual(spec["path"], "Contents/MacOS/SpaceMenderDefenderHelper")
+        self.assertEqual(spec["identifier"], "app.spacemender.SpaceMender.DefenderHelper")
+        self.assertEqual(
+            spec["launch_daemon"]["path"],
+            "Contents/Library/LaunchDaemons/app.spacemender.SpaceMender.DefenderHelper.plist",
+        )
+        self.assertEqual(spec["launch_daemon"]["label"], spec["identifier"])
+
+    def test_spacemender_helper_client_requirement_is_pinned_to_the_profile(self) -> None:
+        """The helper only accepts a client signed by this team.
+
+        The expectation is written with placeholders so that changing the team
+        ID or bundle identifier in the profile cannot leave a stale requirement
+        silently accepted: a helper compiled against the old values stops
+        matching and the preflight rejects it.
+        """
+        profile = broker.load_profiles()["spacemender"]
+        spec = profile["nested_executables"][0]
+        rendered = broker.render_expected_value(
+            spec["embedded_info_plist"]["SpaceMenderAuthorizedClientRequirement"],
+            profile,
+            spec,
+        )
+        self.assertEqual(
+            rendered,
+            'anchor apple generic and identifier "app.spacemender.SpaceMender" '
+            'and certificate leaf[subject.OU] = "G69Z5BNY97"',
         )
 
 
