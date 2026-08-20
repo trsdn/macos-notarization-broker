@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import plistlib
+import re
 import stat
 import struct
 import subprocess
@@ -152,6 +153,37 @@ class ProfileTests(unittest.TestCase):
             'anchor apple generic and identifier "app.spacemender.SpaceMender" '
             'and certificate leaf[subject.OU] = "G69Z5BNY97"',
         )
+
+
+class RequestSurfaceTests(unittest.TestCase):
+    """The dispatch surfaces must list exactly the profiles that exist.
+
+    A profile that is registered but missing from request.sh or the workflow
+    dropdown looks onboarded and is documented as usable, yet every attempt to
+    release it is rejected before it reaches the broker.
+    """
+
+    def _profile_names(self) -> set[str]:
+        return set(broker.load_profiles())
+
+    def test_request_script_accepts_every_profile(self) -> None:
+        script = (ROOT / "scripts" / "request.sh").read_text(encoding="utf-8")
+        match = re.search(r"^\s*([a-z0-9|-]+)\)\s*;;", script, re.MULTILINE)
+        self.assertIsNotNone(match, "request.sh no longer has a recognisable app allowlist")
+        self.assertEqual(set(match.group(1).split("|")), self._profile_names())
+
+    def test_request_usage_message_lists_every_profile(self) -> None:
+        script = (ROOT / "scripts" / "request.sh").read_text(encoding="utf-8")
+        match = re.search(r"Usage: \$0 \{([a-z0-9|-]+)\}", script)
+        self.assertIsNotNone(match, "request.sh no longer has a recognisable usage message")
+        self.assertEqual(set(match.group(1).split("|")), self._profile_names())
+
+    def test_workflow_dropdown_offers_every_profile(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "notarize.yml").read_text(encoding="utf-8")
+        block = re.search(r"options:\n((?:\s*-\s*[a-z0-9-]+\n)+)", workflow)
+        self.assertIsNotNone(block, "notarize.yml no longer has a recognisable profile dropdown")
+        offered = {line.strip().lstrip("- ").strip() for line in block.group(1).splitlines() if line.strip()}
+        self.assertEqual(offered, self._profile_names())
 
 
 class InputValidationTests(unittest.TestCase):
