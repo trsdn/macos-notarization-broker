@@ -94,6 +94,7 @@ def load_profiles() -> dict[str, Any]:
     }
     allowed_adapters = {
         "md2loop-xcode",
+        "opendefendrwatchr-swiftpm",
         "openwritr-swiftpm",
         "ptionsplus-xcode",
         "spacemender-xcode",
@@ -560,6 +561,40 @@ def assemble_openwritr(source: Path, work: Path, profile: dict[str, Any]) -> Pat
     return app
 
 
+def assemble_opendefendrwatchr(
+    source: Path, work: Path, profile: dict[str, Any], version: str
+) -> Path:
+    executable = swift_build(source, "OpenDefendrWatchr", require_lock=False)
+    app = work / profile["bundle_name"]
+    macos = app / "Contents" / "MacOS"
+    macos.mkdir(parents=True)
+    shutil.copy2(executable, macos / profile["executable"])
+    info_path = app / "Contents" / "Info.plist"
+    shutil.copy2(ensure_source_file(source, "Sources/OpenDefendrWatchr/Info.plist"), info_path)
+    with info_path.open("rb") as handle:
+        info = plistlib.load(handle)
+    # The source Info.plist carries __VERSION__ placeholders that only the app's own
+    # build script substitutes, so the broker has to fill them in itself.
+    info.update(
+        {
+            "CFBundleExecutable": profile["executable"],
+            "CFBundleDisplayName": profile["bundle_display_name"],
+            "CFBundlePackageType": "APPL",
+            "CFBundleShortVersionString": version,
+            "CFBundleVersion": version,
+            "LSMinimumSystemVersion": profile["minimum_system_version"],
+            "NSHighResolutionCapable": True,
+        }
+    )
+    # A menu bar app that loses LSUIElement would ship with a Dock icon and a
+    # focus-stealing window, so refuse to sign that rather than notarise it.
+    if info.get("LSUIElement") is not True:
+        fail("OpenDefendrWatchr must stay menu-bar-only: LSUIElement is not true.")
+    with info_path.open("wb") as handle:
+        plistlib.dump(info, handle, sort_keys=True)
+    return app
+
+
 def build_ptionsplus(
     source: Path, work: Path, profile: dict[str, Any], version: str, build_number: str
 ) -> Path:
@@ -651,6 +686,8 @@ def command_build(args: argparse.Namespace) -> None:
         adapter = profile["build_adapter"]
         if adapter == "md2loop-xcode":
             built_app = build_md2loop(source, work, profile, version, args.build_number)
+        elif adapter == "opendefendrwatchr-swiftpm":
+            built_app = assemble_opendefendrwatchr(source, work, profile, version)
         elif adapter == "openwritr-swiftpm":
             built_app = assemble_openwritr(source, work, profile)
         elif adapter == "ptionsplus-xcode":

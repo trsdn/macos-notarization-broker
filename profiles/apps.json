@@ -154,6 +154,30 @@
           "name": "SpaceMender-v{version}-macOS-arm64.dmg"
         }
       ]
+    },
+    "opendefendrwatchr": {
+      "repository": "trsdn/OpenDefendrWatchr",
+      "repository_id": 1342759464,
+      "build_adapter": "opendefendrwatchr-swiftpm",
+      "bundle_name": "OpenDefendrWatchr.app",
+      "bundle_identifier": "com.opendefendrwatchr.app",
+      "bundle_display_name": "OpenDefendrWatchr",
+      "executable": "OpenDefendrWatchr",
+      "package_type": "APPL",
+      "architectures": [
+        "arm64"
+      ],
+      "minimum_system_version": "14.0",
+      "entitlements": "entitlements/opendefendrwatchr.plist",
+      "max_archive_bytes": 1073741824,
+      "max_uncompressed_bytes": 2147483648,
+      "max_files": 5000,
+      "artifacts": [
+        {
+          "type": "zip",
+          "name": "OpenDefendrWatchr-v{version}-macOS-arm64.zip"
+        }
+      ]
     }
   }
 }
