@@ -178,6 +178,49 @@
           "name": "OpenDefendrWatchr-v{version}-macOS-arm64.zip"
         }
       ]
+    },
+    "openconnct": {
+      "repository": "trsdn/OpenConnct",
+      "repository_id": 1341210851,
+      "build_adapter": "openconnct-make",
+      "team_id": "G69Z5BNY97",
+      "bundle_name": "OpenConnct.app",
+      "bundle_identifier": "audio.openconnct.app",
+      "bundle_display_name": "OpenConnct",
+      "executable": "OpenConnct",
+      "package_type": "APPL",
+      "architectures": [
+        "arm64",
+        "x86_64"
+      ],
+      "minimum_system_version": "13.0",
+      "entitlements": "entitlements/openconnct.plist",
+      "nested_executables": [
+        {
+          "path": "Contents/Library/Audio/Plug-Ins/HAL/OpenConnct.driver/Contents/MacOS/OpenConnct",
+          "identifier": "audio.openconnct.driver",
+          "entitlements": "entitlements/openconnct-driver.plist",
+          "plugin_bundle": {
+            "path": "Contents/Library/Audio/Plug-Ins/HAL/OpenConnct.driver",
+            "identifier": "audio.openconnct.driver",
+            "package_type": "BNDL"
+          }
+        }
+      ],
+      "dmg_volume_name": "OpenConnct",
+      "max_archive_bytes": 1073741824,
+      "max_uncompressed_bytes": 2147483648,
+      "max_files": 5000,
+      "artifacts": [
+        {
+          "type": "zip",
+          "name": "OpenConnct-v{version}-macOS-universal.zip"
+        },
+        {
+          "type": "dmg",
+          "name": "OpenConnct-v{version}-macOS-universal.dmg"
+        }
+      ]
     }
   }
 }

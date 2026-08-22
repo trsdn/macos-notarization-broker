@@ -78,6 +78,7 @@ class ProfileTests(unittest.TestCase):
             set(profiles),
             {
                 "md2loop",
+                "openconnct",
                 "opendefendrwatchr",
                 "openwritr",
                 "ptionsplus",
@@ -90,6 +91,7 @@ class ProfileTests(unittest.TestCase):
         profiles = broker.load_profiles()
         self.assertEqual(profiles["md2loop"]["repository_id"], 1168645937)
         self.assertEqual(profiles["opendefendrwatchr"]["repository_id"], 1342759464)
+        self.assertEqual(profiles["openconnct"]["repository_id"], 1341210851)
         self.assertEqual(profiles["openwritr"]["repository_id"], 1165782217)
         self.assertEqual(profiles["ptionsplus"]["repository_id"], 1165009675)
         self.assertEqual(profiles["spacemender"]["repository_id"], 1339151393)
@@ -125,13 +127,23 @@ class ProfileTests(unittest.TestCase):
             names["teleprompter"],
             ["Teleprompter-Mirror-v{version}-macOS-arm64.zip"],
         )
+        self.assertEqual(
+            names["openconnct"],
+            [
+                "OpenConnct-v{version}-macOS-universal.zip",
+                "OpenConnct-v{version}-macOS-universal.dmg",
+            ],
+        )
 
-    def test_spacemender_is_the_only_profile_shipping_nested_code(self) -> None:
+    def test_profiles_shipping_nested_code_are_declared(self) -> None:
+        # spacemender ships a privileged XPC helper; openconnct ships a CoreAudio
+        # HAL plug-in. Any new profile that embeds nested code must be added here
+        # deliberately so the extra signing and validation surface is reviewed.
         profiles = broker.load_profiles()
         shipping = {
             name for name, profile in profiles.items() if profile.get("nested_executables")
         }
-        self.assertEqual(shipping, {"spacemender"})
+        self.assertEqual(shipping, {"openconnct", "spacemender"})
 
     def test_spacemender_declares_exactly_one_privileged_helper(self) -> None:
         profile = broker.load_profiles()["spacemender"]
@@ -428,6 +440,80 @@ class NestedExecutablePolicyTests(unittest.TestCase):
             with self.subTest(team_id=team_id):
                 self.assertIsNone(broker.TEAM_ID_PATTERN.fullmatch(team_id))
         self.assertIsNotNone(broker.TEAM_ID_PATTERN.fullmatch("ABCDE12345"))
+
+    def plugin_profile(self, **overrides: object) -> dict:
+        # A CoreAudio HAL plug-in: a bundle whose own Mach-O is the declared nested
+        # executable, with no launch daemon because coreaudiod loads it directly.
+        profile: dict = {
+            "executable": "Demo",
+            "bundle_identifier": "com.example.Demo",
+            "team_id": "ABCDE12345",
+            "nested_executables": [
+                {
+                    "path": "Contents/Library/Audio/Plug-Ins/HAL/Demo.driver/Contents/MacOS/Demo",
+                    "identifier": "com.example.Demo.driver",
+                    "entitlements": "entitlements/teleprompter.plist",
+                    "plugin_bundle": {
+                        "path": "Contents/Library/Audio/Plug-Ins/HAL/Demo.driver",
+                        "identifier": "com.example.Demo.driver",
+                        "package_type": "BNDL",
+                    },
+                }
+            ],
+        }
+        profile.update(overrides)
+        return profile
+
+    def test_plugin_bundle_policy_is_accepted(self) -> None:
+        broker.validate_nested_executable_policy("demo", self.plugin_profile())
+
+    def test_plugin_bundle_cannot_be_combined_with_a_launch_daemon(self) -> None:
+        profile = self.plugin_profile()
+        profile["nested_executables"][0]["launch_daemon"] = {
+            "path": "Contents/Library/LaunchDaemons/com.example.Demo.driver.plist",
+            "label": "com.example.Demo.driver",
+        }
+        self.assert_rejected(profile)
+
+    def test_plugin_bundle_requires_exactly_path_identifier_and_package_type(self) -> None:
+        for plugin in (
+            {"path": "Contents/Library/Audio/Plug-Ins/HAL/Demo.driver", "identifier": "com.example.Demo.driver"},
+            {
+                "path": "Contents/Library/Audio/Plug-Ins/HAL/Demo.driver",
+                "identifier": "com.example.Demo.driver",
+                "package_type": "BNDL",
+                "label": "extra",
+            },
+        ):
+            with self.subTest(plugin=plugin):
+                profile = self.plugin_profile()
+                profile["nested_executables"][0]["plugin_bundle"] = plugin
+                self.assert_rejected(profile)
+
+    def test_plugin_bundle_must_end_in_a_plugin_suffix(self) -> None:
+        profile = self.plugin_profile()
+        profile["nested_executables"][0]["plugin_bundle"]["path"] = (
+            "Contents/Library/Audio/Plug-Ins/HAL/Demo.bundle"
+        )
+        profile["nested_executables"][0]["path"] = (
+            "Contents/Library/Audio/Plug-Ins/HAL/Demo.bundle/Contents/MacOS/Demo"
+        )
+        self.assert_rejected(profile)
+
+    def test_plugin_bundle_executable_must_live_inside_the_bundle(self) -> None:
+        profile = self.plugin_profile()
+        profile["nested_executables"][0]["path"] = "Contents/MacOS/Demo"
+        self.assert_rejected(profile)
+
+    def test_plugin_bundle_package_type_is_restricted(self) -> None:
+        profile = self.plugin_profile()
+        profile["nested_executables"][0]["plugin_bundle"]["package_type"] = "APPL"
+        self.assert_rejected(profile)
+
+    def test_plugin_bundle_path_must_be_safe(self) -> None:
+        profile = self.plugin_profile()
+        profile["nested_executables"][0]["plugin_bundle"]["path"] = "../evil.driver"
+        self.assert_rejected(profile)
 
 
 class EmbeddedInfoPlistTests(unittest.TestCase):
@@ -753,6 +839,166 @@ class NestedBundleValidationTests(BundleFixtureMixin, unittest.TestCase):
                     self.validate(self.app, self.profile)
 
 
+class PluginBundleValidationTests(BundleFixtureMixin, unittest.TestCase):
+    """Runtime validation of a universal app that embeds a HAL plug-in bundle.
+
+    This exercises the same shape as the openconnct profile: a two-architecture
+    application whose only nested code is a CoreAudio plug-in bundle, loaded by
+    coreaudiod rather than launchd.
+    """
+
+    def setUp(self) -> None:
+        self.lipo_output = "arm64 x86_64"
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.profile = self.plugin_profile()
+        self.app = self.build_plugin_bundle(self.root)
+
+    def plugin_profile(self) -> dict:
+        return {
+            "bundle_name": "Demo.app",
+            "bundle_identifier": "com.example.Demo",
+            "bundle_display_name": "Demo",
+            "executable": "Demo",
+            "package_type": "APPL",
+            "architectures": ["arm64", "x86_64"],
+            "minimum_system_version": "13.0",
+            "team_id": "ABCDE12345",
+            "max_files": 500,
+            "max_uncompressed_bytes": 10_000_000,
+            "nested_executables": [
+                {
+                    "path": "Contents/Library/Audio/Plug-Ins/HAL/Demo.driver/Contents/MacOS/Demo",
+                    "identifier": "com.example.Demo.driver",
+                    "entitlements": "entitlements/teleprompter.plist",
+                    "plugin_bundle": {
+                        "path": "Contents/Library/Audio/Plug-Ins/HAL/Demo.driver",
+                        "identifier": "com.example.Demo.driver",
+                        "package_type": "BNDL",
+                    },
+                }
+            ],
+        }
+
+    def build_plugin_bundle(self, root: Path) -> Path:
+        app = root / "Demo.app"
+        macos = app / "Contents" / "MacOS"
+        macos.mkdir(parents=True)
+        (app / "Contents" / "Resources").mkdir(parents=True)
+        driver = app / "Contents" / "Library" / "Audio" / "Plug-Ins" / "HAL" / "Demo.driver"
+        driver_macos = driver / "Contents" / "MacOS"
+        driver_macos.mkdir(parents=True)
+
+        (macos / "Demo").write_bytes(self.ARM64_MACHO)
+        (macos / "Demo").chmod(0o755)
+        (driver_macos / "Demo").write_bytes(self.ARM64_MACHO)
+        (driver_macos / "Demo").chmod(0o755)
+        with (driver / "Contents" / "Info.plist").open("wb") as handle:
+            plistlib.dump(
+                {
+                    "CFBundleIdentifier": "com.example.Demo.driver",
+                    "CFBundleExecutable": "Demo",
+                    "CFBundlePackageType": "BNDL",
+                },
+                handle,
+            )
+        with (app / "Contents" / "Info.plist").open("wb") as handle:
+            plistlib.dump(
+                {
+                    "CFBundleIdentifier": "com.example.Demo",
+                    "CFBundleExecutable": "Demo",
+                    "CFBundlePackageType": "APPL",
+                    "CFBundleShortVersionString": "1.2.3",
+                    "CFBundleVersion": "1",
+                    "CFBundleDisplayName": "Demo",
+                    "LSMinimumSystemVersion": "13.0",
+                },
+                handle,
+            )
+        return app
+
+    def test_universal_app_with_a_declared_plugin_is_accepted(self) -> None:
+        result = self.validate(self.app, self.profile)
+        self.assertEqual(result["architectures"], ["arm64", "x86_64"])
+        record = result["nested_executables"][0]
+        self.assertEqual(record["architectures"], ["arm64", "x86_64"])
+        plugin = record["plugin_bundle"]
+        self.assertEqual(plugin["identifier"], "com.example.Demo.driver")
+        self.assertEqual(plugin["package_type"], "BNDL")
+        info = self.app / plugin["path"] / "Contents" / "Info.plist"
+        self.assertEqual(plugin["info_plist_sha256"], broker.sha256_file(info))
+
+    def test_app_architecture_mismatch_is_rejected(self) -> None:
+        # The runner may only build one slice; a universal profile must not accept
+        # a thin binary, or an Intel Mac would silently get no audio driver.
+        self.lipo_output = "arm64"
+        with self.assertRaises(broker.BrokerError):
+            self.validate(self.app, self.profile)
+
+    def test_undeclared_driver_bundle_is_rejected(self) -> None:
+        # A profile that ships no plug-in must not let a .driver slip through: the
+        # allowance is keyed to the exact declared path.
+        profile = self.plugin_profile()
+        profile.pop("nested_executables")
+        with self.assertRaises(broker.BrokerError) as caught:
+            self.validate(self.app, profile)
+        self.assertIn("Nested bundles are not allowed", str(caught.exception))
+
+    def test_miscased_driver_bundle_is_rejected(self) -> None:
+        # APFS is case-insensitive, so a miscased Demo.DRIVER names the same runtime
+        # directory but is not the declared path; it must be rejected.
+        stray = (
+            self.app / "Contents" / "Library" / "Audio" / "Plug-Ins" / "HAL" / "Stray.DRIVER"
+        )
+        stray.mkdir(parents=True)
+        with self.assertRaises(broker.BrokerError) as caught:
+            self.validate(self.app, self.profile)
+        self.assertIn("Nested bundles are not allowed", str(caught.exception))
+
+    def test_plugin_identity_mismatch_is_rejected(self) -> None:
+        for key, value in (
+            ("CFBundleIdentifier", "com.attacker.driver"),
+            ("CFBundlePackageType", "APPL"),
+            ("CFBundleExecutable", "Other"),
+        ):
+            with self.subTest(key=key):
+                app = self.build_plugin_bundle(Path(tempfile.mkdtemp(dir=self.root)))
+                info_path = (
+                    app
+                    / "Contents"
+                    / "Library"
+                    / "Audio"
+                    / "Plug-Ins"
+                    / "HAL"
+                    / "Demo.driver"
+                    / "Contents"
+                    / "Info.plist"
+                )
+                with info_path.open("rb") as handle:
+                    info = plistlib.load(handle)
+                info[key] = value
+                with info_path.open("wb") as handle:
+                    plistlib.dump(info, handle)
+                with self.assertRaises(broker.BrokerError):
+                    self.validate(app, self.profile)
+
+    def test_missing_plugin_info_plist_is_rejected(self) -> None:
+        (
+            self.app
+            / "Contents"
+            / "Library"
+            / "Audio"
+            / "Plug-Ins"
+            / "HAL"
+            / "Demo.driver"
+            / "Contents"
+            / "Info.plist"
+        ).unlink()
+        with self.assertRaises(broker.BrokerError):
+            self.validate(self.app, self.profile)
+
+
 class SignedPayloadComparisonTests(BundleFixtureMixin, unittest.TestCase):
     def setUp(self) -> None:
         self.lipo_output = "arm64"
@@ -872,7 +1118,11 @@ class BuildSettingsTests(unittest.TestCase):
 
 # Tools the macos-15 runner image provides. The untrusted build job installs
 # nothing, so an adapter that reaches for anything outside this set fails at
-# dispatch time on a real runner rather than in review.
+# dispatch time on a real runner rather than in review. `make` is GNU Make from
+# the Command Line Tools that ship with Xcode on the runner image; the
+# openconnct-make adapter uses it to drive a committed Makefile, and the
+# compilers that Makefile invokes (clang, swiftc, libtool, lipo) come from the
+# same toolchain.
 PREINSTALLED_TOOLS = {
     "codesign",
     "ditto",
@@ -880,6 +1130,7 @@ PREINSTALLED_TOOLS = {
     "git",
     "hdiutil",
     "lipo",
+    "make",
     "plutil",
     "swift",
     "xattr",
@@ -944,6 +1195,54 @@ class BuildAdapterTests(unittest.TestCase):
                 broker.build_spacemender(
                     source, work, broker.get_profile("spacemender"), "1.2.3", "42"
                 )
+
+    def test_openconnct_builds_the_committed_makefile(self) -> None:
+        profile = broker.get_profile("openconnct")
+        calls: list[list[str]] = []
+
+        def fake_run(command, **kwargs):  # type: ignore[no-untyped-def]
+            calls.append(command)
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "source"
+            source.mkdir(parents=True)
+            (source / "Makefile").write_text("build:\n\ttrue\n", encoding="utf-8")
+            work = Path(temporary) / "work"
+            work.mkdir()
+            app = work / "dist" / profile["bundle_name"] / "Contents"
+            app.mkdir(parents=True)
+            with (app / "Info.plist").open("wb") as handle:
+                plistlib.dump(
+                    {"CFBundleShortVersionString": "0.0.0", "CFBundleVersion": "0"}, handle
+                )
+            with mock.patch.object(broker, "run", side_effect=fake_run):
+                built = broker.build_openconnct(source, work, profile, "1.2.3", "42")
+
+            self.assertEqual(built, work / "dist" / profile["bundle_name"])
+            with (built / "Contents" / "Info.plist").open("rb") as handle:
+                stamped = plistlib.load(handle)
+
+        self.assertEqual(len(calls), 1, "the build must be a single make invocation")
+        command = calls[0]
+        self.assertEqual(command[0], "make")
+        self.assertIn("embed-driver", command)
+        self.assertIn("UNIVERSAL=1", command)
+        self.assertTrue(any(part.startswith("DIST_DIR=") for part in command))
+        self.assertEqual(stamped["CFBundleShortVersionString"], "1.2.3")
+        self.assertEqual(stamped["CFBundleVersion"], "42")
+
+    def test_openconnct_build_requires_the_committed_makefile(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "source"
+            source.mkdir(parents=True)
+            work = Path(temporary) / "work"
+            work.mkdir()
+            with mock.patch.object(broker, "run", side_effect=AssertionError("must not build")):
+                with self.assertRaises(broker.BrokerError):
+                    broker.build_openconnct(
+                        source, work, broker.get_profile("openconnct"), "1.2.3", "42"
+                    )
 
 
 if __name__ == "__main__":
