@@ -8,9 +8,9 @@ tag="${2:-}"
 output="${3:-broker-artifacts}"
 
 case "$app" in
-  md2loop|openwritr|ptionsplus|spacemender|teleprompter) ;;
+  md2loop|opendefendrwatchr|openwritr|ptionsplus|spacemender|teleprompter) ;;
   *)
-    echo "Usage: $0 {md2loop|openwritr|ptionsplus|spacemender|teleprompter} vX.Y.Z [output-directory]" >&2
+    echo "Usage: $0 {md2loop|opendefendrwatchr|openwritr|ptionsplus|spacemender|teleprompter} vX.Y.Z [output-directory]" >&2
     exit 1
     ;;
 esac

@@ -76,12 +76,20 @@ class ProfileTests(unittest.TestCase):
         profiles = broker.load_profiles()
         self.assertEqual(
             set(profiles),
-            {"md2loop", "openwritr", "ptionsplus", "spacemender", "teleprompter"},
+            {
+                "md2loop",
+                "opendefendrwatchr",
+                "openwritr",
+                "ptionsplus",
+                "spacemender",
+                "teleprompter",
+            },
         )
 
     def test_profile_repository_identities_are_fixed(self) -> None:
         profiles = broker.load_profiles()
         self.assertEqual(profiles["md2loop"]["repository_id"], 1168645937)
+        self.assertEqual(profiles["opendefendrwatchr"]["repository_id"], 1342759464)
         self.assertEqual(profiles["openwritr"]["repository_id"], 1165782217)
         self.assertEqual(profiles["ptionsplus"]["repository_id"], 1165009675)
         self.assertEqual(profiles["spacemender"]["repository_id"], 1339151393)
@@ -94,6 +102,10 @@ class ProfileTests(unittest.TestCase):
             for name, profile in profiles.items()
         }
         self.assertEqual(names["md2loop"], ["md2loop-{version}-macos.dmg"])
+        self.assertEqual(
+            names["opendefendrwatchr"],
+            ["OpenDefendrWatchr-v{version}-macOS-arm64.zip"],
+        )
         self.assertEqual(
             names["openwritr"],
             [
