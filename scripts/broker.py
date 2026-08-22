@@ -568,6 +568,8 @@ def assemble_opendefendrwatchr(
     app = work / profile["bundle_name"]
     macos = app / "Contents" / "MacOS"
     macos.mkdir(parents=True)
+    # The app ships no resources, but preflight requires the directory to exist.
+    (app / "Contents" / "Resources").mkdir(parents=True)
     shutil.copy2(executable, macos / profile["executable"])
     info_path = app / "Contents" / "Info.plist"
     shutil.copy2(ensure_source_file(source, "Sources/OpenDefendrWatchr/Info.plist"), info_path)
