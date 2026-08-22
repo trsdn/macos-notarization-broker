@@ -181,7 +181,7 @@
     },
     "openconnct": {
       "repository": "trsdn/OpenConnct",
-      "repository_id": 1341210851,
+      "repository_id": 1342923126,
       "build_adapter": "openconnct-make",
       "team_id": "G69Z5BNY97",
       "bundle_name": "OpenConnct.app",
