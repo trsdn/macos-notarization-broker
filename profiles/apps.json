@@ -27,6 +27,35 @@
         }
       ]
     },
+    "openswitchr": {
+      "repository": "trsdn/OpenSwitchr",
+      "repository_id": 1342585430,
+      "build_adapter": "openswitchr-swiftpm",
+      "bundle_name": "OpenSwitchr.app",
+      "bundle_identifier": "com.openswitchr.app",
+      "bundle_display_name": "OpenSwitchr",
+      "executable": "OpenSwitchr",
+      "package_type": "APPL",
+      "architectures": [
+        "arm64"
+      ],
+      "minimum_system_version": "15.0",
+      "entitlements": "entitlements/openswitchr.plist",
+      "dmg_volume_name": "OpenSwitchr",
+      "max_archive_bytes": 1073741824,
+      "max_uncompressed_bytes": 2147483648,
+      "max_files": 5000,
+      "artifacts": [
+        {
+          "type": "zip",
+          "name": "OpenSwitchr-v{version}-macOS-arm64.zip"
+        },
+        {
+          "type": "dmg",
+          "name": "OpenSwitchr-v{version}-macOS-arm64.dmg"
+        }
+      ]
+    },
     "openwritr": {
       "repository": "trsdn/OpenWritr",
       "repository_id": 1165782217,
@@ -85,30 +114,6 @@
         }
       ]
     },
-    "teleprompter": {
-      "repository": "trsdn/teleprompter-mirror-macos",
-      "repository_id": 1339874326,
-      "build_adapter": "teleprompter-swiftpm",
-      "bundle_name": "Teleprompter Mirror.app",
-      "bundle_identifier": "com.github.trsdn.TeleprompterMirror",
-      "bundle_display_name": "Teleprompter Mirror",
-      "executable": "TeleprompterMirror",
-      "package_type": "APPL",
-      "architectures": [
-        "arm64"
-      ],
-      "minimum_system_version": "13.0",
-      "entitlements": "entitlements/teleprompter.plist",
-      "max_archive_bytes": 1073741824,
-      "max_uncompressed_bytes": 2147483648,
-      "max_files": 5000,
-      "artifacts": [
-        {
-          "type": "zip",
-          "name": "Teleprompter-Mirror-v{version}-macOS-arm64.zip"
-        }
-      ]
-    },
     "spacemender": {
       "repository": "trsdn/SpaceMender",
       "repository_id": 1339151393,
@@ -152,6 +157,30 @@
         {
           "type": "dmg",
           "name": "SpaceMender-v{version}-macOS-arm64.dmg"
+        }
+      ]
+    },
+    "teleprompter": {
+      "repository": "trsdn/teleprompter-mirror-macos",
+      "repository_id": 1339874326,
+      "build_adapter": "teleprompter-swiftpm",
+      "bundle_name": "Teleprompter Mirror.app",
+      "bundle_identifier": "com.github.trsdn.TeleprompterMirror",
+      "bundle_display_name": "Teleprompter Mirror",
+      "executable": "TeleprompterMirror",
+      "package_type": "APPL",
+      "architectures": [
+        "arm64"
+      ],
+      "minimum_system_version": "13.0",
+      "entitlements": "entitlements/teleprompter.plist",
+      "max_archive_bytes": 1073741824,
+      "max_uncompressed_bytes": 2147483648,
+      "max_files": 5000,
+      "artifacts": [
+        {
+          "type": "zip",
+          "name": "Teleprompter-Mirror-v{version}-macOS-arm64.zip"
         }
       ]
     }

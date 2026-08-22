@@ -94,6 +94,7 @@ def load_profiles() -> dict[str, Any]:
     }
     allowed_adapters = {
         "md2loop-xcode",
+        "openswitchr-swiftpm",
         "openwritr-swiftpm",
         "ptionsplus-xcode",
         "spacemender-xcode",
@@ -560,6 +561,32 @@ def assemble_openwritr(source: Path, work: Path, profile: dict[str, Any]) -> Pat
     return app
 
 
+def assemble_openswitchr(source: Path, work: Path, profile: dict[str, Any]) -> Path:
+    executable = swift_build(source, "OpenSwitchr", require_lock=False)
+    app = work / profile["bundle_name"]
+    macos = app / "Contents" / "MacOS"
+    resources = app / "Contents" / "Resources"
+    macos.mkdir(parents=True)
+    resources.mkdir(parents=True)
+    shutil.copy2(executable, macos / profile["executable"])
+    info_path = app / "Contents" / "Info.plist"
+    shutil.copy2(ensure_source_file(source, "Info.plist"), info_path)
+    with info_path.open("rb") as handle:
+        info = plistlib.load(handle)
+    info.update(
+        {
+            "CFBundleExecutable": profile["executable"],
+            "CFBundlePackageType": profile["package_type"],
+            "CFBundleDisplayName": profile["bundle_display_name"],
+            "NSHighResolutionCapable": True,
+            "LSMinimumSystemVersion": profile["minimum_system_version"],
+        }
+    )
+    with info_path.open("wb") as handle:
+        plistlib.dump(info, handle, sort_keys=True)
+    return app
+
+
 def build_ptionsplus(
     source: Path, work: Path, profile: dict[str, Any], version: str, build_number: str
 ) -> Path:
@@ -651,6 +678,8 @@ def command_build(args: argparse.Namespace) -> None:
         adapter = profile["build_adapter"]
         if adapter == "md2loop-xcode":
             built_app = build_md2loop(source, work, profile, version, args.build_number)
+        elif adapter == "openswitchr-swiftpm":
+            built_app = assemble_openswitchr(source, work, profile)
         elif adapter == "openwritr-swiftpm":
             built_app = assemble_openwritr(source, work, profile)
         elif adapter == "ptionsplus-xcode":
