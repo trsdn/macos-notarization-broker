@@ -76,12 +76,20 @@ class ProfileTests(unittest.TestCase):
         profiles = broker.load_profiles()
         self.assertEqual(
             set(profiles),
-            {"md2loop", "openwritr", "ptionsplus", "spacemender", "teleprompter"},
+            {
+                "md2loop",
+                "openswitchr",
+                "openwritr",
+                "ptionsplus",
+                "spacemender",
+                "teleprompter",
+            },
         )
 
     def test_profile_repository_identities_are_fixed(self) -> None:
         profiles = broker.load_profiles()
         self.assertEqual(profiles["md2loop"]["repository_id"], 1168645937)
+        self.assertEqual(profiles["openswitchr"]["repository_id"], 1342585430)
         self.assertEqual(profiles["openwritr"]["repository_id"], 1165782217)
         self.assertEqual(profiles["ptionsplus"]["repository_id"], 1165009675)
         self.assertEqual(profiles["spacemender"]["repository_id"], 1339151393)
@@ -99,6 +107,13 @@ class ProfileTests(unittest.TestCase):
             [
                 "OpenWritr-v{version}-macOS-arm64.zip",
                 "OpenWritr-v{version}-macOS-arm64.dmg",
+            ],
+        )
+        self.assertEqual(
+            names["openswitchr"],
+            [
+                "OpenSwitchr-v{version}-macOS-arm64.zip",
+                "OpenSwitchr-v{version}-macOS-arm64.dmg",
             ],
         )
         self.assertEqual(names["ptionsplus"], ["Ptions+.zip", "Ptions+.dmg"])
