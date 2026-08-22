@@ -91,7 +91,7 @@ class ProfileTests(unittest.TestCase):
         profiles = broker.load_profiles()
         self.assertEqual(profiles["md2loop"]["repository_id"], 1168645937)
         self.assertEqual(profiles["opendefendrwatchr"]["repository_id"], 1342759464)
-        self.assertEqual(profiles["openconnct"]["repository_id"], 1341210851)
+        self.assertEqual(profiles["openconnct"]["repository_id"], 1342923126)
         self.assertEqual(profiles["openwritr"]["repository_id"], 1165782217)
         self.assertEqual(profiles["ptionsplus"]["repository_id"], 1165009675)
         self.assertEqual(profiles["spacemender"]["repository_id"], 1339151393)
