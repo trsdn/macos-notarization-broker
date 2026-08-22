@@ -42,7 +42,23 @@ MACHO_MAGICS = {
     b"\xca\xfe\xba\xbf",
     b"\xbf\xba\xfe\xca",
 }
-NESTED_BUNDLE_SUFFIXES = (".app", ".appex", ".bundle", ".framework", ".xpc")
+# A nested bundle is rejected for every profile unless a reviewed profile names
+# it exactly. ".driver" is a CoreAudio HAL plug-in bundle; it is listed here so
+# that an undeclared one is rejected like any other nested bundle, and allowed
+# only when a profile pins it through a `plugin_bundle` declaration.
+NESTED_BUNDLE_SUFFIXES = (".app", ".appex", ".bundle", ".driver", ".framework", ".xpc")
+# Slice names a profile may declare in `architectures`. Every profile has been
+# arm64-only, but a system audio HAL plug-in has to load on Intel Macs too, so a
+# profile may declare a universal binary from this closed set. The set is closed
+# because `lipo -archs` output is compared against it exactly.
+ALLOWED_ARCHITECTURES = ("arm64", "x86_64")
+# Bundle suffixes a profile may pin as a `plugin_bundle`. Kept to the CoreAudio
+# HAL plug-in extension so the allowance cannot be used to smuggle an undeclared
+# .app or .framework past the nested-bundle check by relabelling it.
+PLUGIN_BUNDLE_SUFFIXES = (".driver",)
+# CFBundlePackageType values a pinned plug-in bundle may declare. A HAL plug-in
+# is a loadable bundle ("BNDL"); an application ("APPL") is never a plug-in.
+ALLOWED_PLUGIN_PACKAGE_TYPES = {"BNDL"}
 TEAM_ID_PATTERN = re.compile(r"^[A-Z0-9]{10}$")
 CODE_IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$")
 BUNDLE_RELATIVE_PATH_PATTERN = re.compile(
@@ -94,6 +110,7 @@ def load_profiles() -> dict[str, Any]:
     }
     allowed_adapters = {
         "md2loop-xcode",
+        "openconnect-make",
         "openwritr-swiftpm",
         "ptionsplus-xcode",
         "spacemender-xcode",
@@ -113,8 +130,17 @@ def load_profiles() -> dict[str, Any]:
             fail(f"Profile {name} has an invalid repository ID.")
         if profile["package_type"] != "APPL":
             fail(f"Profile {name} must describe an application bundle.")
-        if profile["architectures"] != ["arm64"]:
-            fail(f"Profile {name} must currently require exactly arm64.")
+        architectures = profile["architectures"]
+        if (
+            not isinstance(architectures, list)
+            or not architectures
+            or len(architectures) != len(set(architectures))
+            or any(slice_name not in ALLOWED_ARCHITECTURES for slice_name in architectures)
+        ):
+            fail(
+                f"Profile {name} must declare architectures as a non-empty, duplicate-free "
+                f"subset of {list(ALLOWED_ARCHITECTURES)}."
+            )
         entitlement_path = safe_profile_path(profile["entitlements"])
         with entitlement_path.open("rb") as handle:
             entitlements = plistlib.load(handle)
@@ -178,7 +204,14 @@ def validate_nested_executable_policy(name: str, profile: dict[str, Any]) -> Non
     if "team_id" not in profile:
         fail(f"Profile {name} must declare team_id before it may ship nested executables.")
 
-    allowed_fields = {"path", "identifier", "entitlements", "embedded_info_plist", "launch_daemon"}
+    allowed_fields = {
+        "path",
+        "identifier",
+        "entitlements",
+        "embedded_info_plist",
+        "launch_daemon",
+        "plugin_bundle",
+    }
     required_fields = {"path", "identifier", "entitlements"}
     claimed = {f"Contents/MacOS/{profile['executable']}"}
     for spec in specs:
@@ -213,6 +246,48 @@ def validate_nested_executable_policy(name: str, profile: dict[str, Any]) -> Non
             fail(f"Profile {name} embedded_info_plist must map string keys to string values.")
         for template in expectations.values():
             render_expected_value(template, profile, spec)
+
+        plugin = spec.get("plugin_bundle")
+        if plugin is not None:
+            # A HAL plug-in is a bundle, not a launch daemon: coreaudiod loads it,
+            # launchd never sees it. The two shapes are mutually exclusive so a
+            # profile cannot claim daemon semantics for a plug-in or vice versa.
+            if "launch_daemon" in spec:
+                fail(
+                    f"Profile {name} nested executable cannot declare both plugin_bundle "
+                    "and launch_daemon."
+                )
+            if not isinstance(plugin, dict) or set(plugin) != {"path", "identifier", "package_type"}:
+                fail(
+                    f"Profile {name} plugin_bundle must declare exactly path, identifier, "
+                    "and package_type."
+                )
+            plugin_path = plugin["path"]
+            if not isinstance(plugin_path, str) or not BUNDLE_RELATIVE_PATH_PATTERN.fullmatch(plugin_path):
+                fail(f"Profile {name} has an unsafe plugin_bundle path: {plugin_path!r}")
+            if not PurePosixPath(plugin_path).name.casefold().endswith(PLUGIN_BUNDLE_SUFFIXES):
+                fail(
+                    f"Profile {name} plugin_bundle must be a plug-in bundle ending in one of "
+                    f"{', '.join(PLUGIN_BUNDLE_SUFFIXES)}."
+                )
+            # The declared executable must be the plug-in bundle's own Mach-O, so the
+            # bytes preflight pins are exactly the ones the signing job seals when it
+            # signs the enclosing bundle inside-out.
+            expected_prefix = f"{plugin_path}/Contents/MacOS/"
+            if not path.startswith(expected_prefix):
+                fail(
+                    f"Profile {name} plugin_bundle executable must live under {expected_prefix}."
+                )
+            if plugin["package_type"] not in ALLOWED_PLUGIN_PACKAGE_TYPES:
+                fail(
+                    f"Profile {name} plugin_bundle package_type must be one of "
+                    f"{', '.join(sorted(ALLOWED_PLUGIN_PACKAGE_TYPES))}."
+                )
+            if not CODE_IDENTIFIER_PATTERN.fullmatch(str(plugin["identifier"])):
+                fail(f"Profile {name} has an invalid plugin_bundle identifier: {plugin['identifier']!r}")
+            if plugin_path in claimed:
+                fail(f"Profile {name} declares a duplicate bundle path: {plugin_path}")
+            claimed.add(plugin_path)
 
         daemon = spec.get("launch_daemon")
         if daemon is None:
@@ -628,6 +703,51 @@ def assemble_teleprompter(source: Path, work: Path, profile: dict[str, Any]) -> 
     return app
 
 
+def stamp_bundle_version(app: Path, version: str, build_number: str) -> None:
+    # OpenConnect's Makefile installs a static Info.plist, so the broker stamps the
+    # release version into the built bundle the same way the xcodebuild adapters pass
+    # MARKETING_VERSION and CURRENT_PROJECT_VERSION. Preflight independently checks
+    # CFBundleShortVersionString against the resolved tag, so this only lets an honest
+    # build satisfy that check; it cannot relax it.
+    info_path = app / "Contents" / "Info.plist"
+    if info_path.is_symlink() or not info_path.is_file():
+        fail("Built application is missing Contents/Info.plist.")
+    with info_path.open("rb") as handle:
+        info = plistlib.load(handle)
+    if not isinstance(info, dict):
+        fail("Built application Info.plist is not a dictionary.")
+    info["CFBundleShortVersionString"] = version
+    info["CFBundleVersion"] = build_number
+    with info_path.open("wb") as handle:
+        plistlib.dump(info, handle)
+
+
+def build_openconnect(
+    source: Path, work: Path, profile: dict[str, Any], version: str, build_number: str
+) -> Path:
+    # OpenConnect ships no committed .xcodeproj and its app target is not a SwiftPM
+    # executable: a SwiftUI binary is linked by swiftc against a C++ DSP static
+    # library, and a CoreAudio HAL plug-in is compiled by clang and embedded into the
+    # app. Its committed, deterministic build definition is the Makefile, so this
+    # adapter drives that the same way build_spacemender drives a committed
+    # .xcodeproj. `make` and the compilers it invokes (clang, swiftc, libtool, lipo)
+    # all ship with the runner's Xcode; nothing is generated, fetched, or installed,
+    # which keeps the untrusted build job on preinstalled tooling only.
+    require_tools(["make"])
+    ensure_source_file(source, "Makefile")
+    dist = work / "dist"
+    # UNIVERSAL=1 builds both the arm64 and x86_64 slices — a system audio driver has
+    # to load on Intel Macs too — and embed-driver copies the built .driver into the
+    # app. DIST_DIR is redirected into the broker work tree so the checked-out source
+    # stays pristine. No CODE_SIGN_IDENTITY is exported, so the Makefile's opportunistic
+    # signing step finds no identity and leaves the bundle unsigned; that is exactly the
+    # linker-signed input preflight requires, and the broker owns all real signing.
+    run(["make", "embed-driver", "UNIVERSAL=1", f"DIST_DIR={dist}"], cwd=source)
+    app = dist / profile["bundle_name"]
+    stamp_bundle_version(app, version, build_number)
+    return app
+
+
 def command_build(args: argparse.Namespace) -> None:
     require_tools(["ditto", "file", "git", "lipo", "swift", "xcodebuild"])
     version = validate_tag(f"v{args.version}")
@@ -651,6 +771,8 @@ def command_build(args: argparse.Namespace) -> None:
         adapter = profile["build_adapter"]
         if adapter == "md2loop-xcode":
             built_app = build_md2loop(source, work, profile, version, args.build_number)
+        elif adapter == "openconnect-make":
+            built_app = build_openconnect(source, work, profile, version, args.build_number)
         elif adapter == "openwritr-swiftpm":
             built_app = assemble_openwritr(source, work, profile)
         elif adapter == "ptionsplus-xcode":
@@ -905,6 +1027,45 @@ def validate_launch_daemon(app_path: Path, spec: dict[str, Any]) -> dict[str, An
     }
 
 
+def validate_plugin_bundle(app_path: Path, spec: dict[str, Any]) -> dict[str, Any]:
+    # A HAL plug-in carries its identity in its bundle's Contents/Info.plist, not
+    # in a __TEXT,__info_plist section: the Mach-O is a plain clang -bundle with no
+    # embedded plist, and it is universal, so parse_embedded_info_plist would reject
+    # it anyway. Pin the bundle's declared identity against the profile so the plug-in
+    # coreaudiod loads is exactly the one this profile describes.
+    plugin = spec["plugin_bundle"]
+    bundle_path = app_path / plugin["path"]
+    if bundle_path.is_symlink() or not bundle_path.is_dir():
+        fail(f"Declared plug-in bundle is missing or unsafe: {plugin['path']}")
+    info_path = bundle_path / "Contents" / "Info.plist"
+    if info_path.is_symlink() or not info_path.is_file():
+        fail(f"Plug-in bundle is missing its Contents/Info.plist: {plugin['path']}")
+    try:
+        with info_path.open("rb") as handle:
+            info = plistlib.load(handle)
+    except Exception as error:
+        fail(f"Plug-in bundle Info.plist is invalid: {plugin['path']}: {error}")
+    if not isinstance(info, dict):
+        fail(f"Plug-in bundle Info.plist must be a dictionary: {plugin['path']}")
+    checks = {
+        "CFBundleIdentifier": plugin["identifier"],
+        "CFBundlePackageType": plugin["package_type"],
+        "CFBundleExecutable": PurePosixPath(spec["path"]).name,
+    }
+    for key, expected in checks.items():
+        if str(info.get(key, "")) != expected:
+            fail(
+                f"Plug-in bundle {plugin['path']} Info.plist key {key} mismatch: "
+                f"expected {expected!r}, got {info.get(key)!r}"
+            )
+    return {
+        "path": plugin["path"],
+        "identifier": plugin["identifier"],
+        "package_type": plugin["package_type"],
+        "info_plist_sha256": sha256_file(info_path),
+    }
+
+
 def validate_nested_executable(
     app_path: Path, profile: dict[str, Any], spec: dict[str, Any]
 ) -> dict[str, Any]:
@@ -931,6 +1092,8 @@ def validate_nested_executable(
     }
     if "launch_daemon" in spec:
         record["launch_daemon"] = validate_launch_daemon(app_path, spec)
+    if "plugin_bundle" in spec:
+        record["plugin_bundle"] = validate_plugin_bundle(app_path, spec)
     return record
 
 
@@ -958,6 +1121,13 @@ def validate_app_tree(
     declared_jobs = {
         app_path / spec["launch_daemon"]["path"] for spec in specs if "launch_daemon" in spec
     }
+    # A pinned plug-in bundle is the one nested bundle a profile may ship. Its
+    # directory is allowed through the nested-bundle check by exact, case-sensitive
+    # path; anything Mach-O or executable inside it is still policed by the checks
+    # below because only its declared executable appears in `declared_code`.
+    declared_bundles = {
+        app_path / spec["plugin_bundle"]["path"] for spec in specs if "plugin_bundle" in spec
+    }
     for path in app_path.rglob("*"):
         relative = path.relative_to(app_path)
         metadata = path.lstat()
@@ -970,7 +1140,7 @@ def validate_app_tree(
             if path not in declared_jobs:
                 fail(f"Undeclared launchd job definition: {relative}")
         if path.is_dir() and path != app_path:
-            if path.name.casefold().endswith(NESTED_BUNDLE_SUFFIXES):
+            if path.name.casefold().endswith(NESTED_BUNDLE_SUFFIXES) and path not in declared_bundles:
                 fail(f"Nested bundles are not allowed for this profile: {relative}")
             continue
         file_count += 1

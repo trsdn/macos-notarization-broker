@@ -154,6 +154,49 @@
           "name": "SpaceMender-v{version}-macOS-arm64.dmg"
         }
       ]
+    },
+    "openconnect": {
+      "repository": "trsdn/OpenConnect",
+      "repository_id": 1341210851,
+      "build_adapter": "openconnect-make",
+      "team_id": "G69Z5BNY97",
+      "bundle_name": "OpenConnect.app",
+      "bundle_identifier": "audio.openconnect.app",
+      "bundle_display_name": "OpenConnect",
+      "executable": "OpenConnect",
+      "package_type": "APPL",
+      "architectures": [
+        "arm64",
+        "x86_64"
+      ],
+      "minimum_system_version": "13.0",
+      "entitlements": "entitlements/openconnect.plist",
+      "nested_executables": [
+        {
+          "path": "Contents/Library/Audio/Plug-Ins/HAL/OpenConnect.driver/Contents/MacOS/OpenConnect",
+          "identifier": "audio.openconnect.driver",
+          "entitlements": "entitlements/openconnect-driver.plist",
+          "plugin_bundle": {
+            "path": "Contents/Library/Audio/Plug-Ins/HAL/OpenConnect.driver",
+            "identifier": "audio.openconnect.driver",
+            "package_type": "BNDL"
+          }
+        }
+      ],
+      "dmg_volume_name": "OpenConnect",
+      "max_archive_bytes": 1073741824,
+      "max_uncompressed_bytes": 2147483648,
+      "max_files": 5000,
+      "artifacts": [
+        {
+          "type": "zip",
+          "name": "OpenConnect-v{version}-macOS-universal.zip"
+        },
+        {
+          "type": "dmg",
+          "name": "OpenConnect-v{version}-macOS-universal.dmg"
+        }
+      ]
     }
   }
 }
