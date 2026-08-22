@@ -142,17 +142,19 @@ The Apple Team ID is deliberately not in that list. See
 
 All profiles reject symlinks, executable resources, provisioning profiles, and
 pre-existing identity-backed signatures. Nested bundles — `.app`, `.appex`,
-`.bundle`, `.framework`, `.xpc` — are rejected for every profile. Undeclared
-nested Mach-O code and undeclared executable files are rejected for every
-profile.
+`.bundle`, `.driver`, `.framework`, `.xpc` — are rejected for every profile,
+with one reviewed exception: a profile may pin exactly one `.driver` CoreAudio
+plug-in bundle through a `plugin_bundle` declaration, allowed by its exact
+declared path. Undeclared nested Mach-O code and undeclared executable files are
+rejected for every profile.
 
 ## Nested executable code
 
 A profile may ship a second executable, such as a privileged launch daemon
-helper, only when a reviewed profile names it exactly. There are no globs, no
-directories, and no "allow anything under this path" escape. The invariant is
-unchanged: the privileged job only ever signs bytes that a secretless job
-already described.
+helper or a CoreAudio HAL plug-in, only when a reviewed profile names it exactly.
+There are no globs, no directories, and no "allow anything under this path"
+escape. The invariant is unchanged: the privileged job only ever signs bytes
+that a secretless job already described.
 
 Each entry in `nested_executables` declares:
 
@@ -160,8 +162,15 @@ Each entry in `nested_executables` declares:
 - `identifier` — the code signing identifier for that executable;
 - `entitlements` — a broker-owned entitlements plist;
 - `embedded_info_plist` — optional exact expectations checked against the
-  `__TEXT,__info_plist` section of the built binary; and
-- `launch_daemon` — the optional bundled job to pin.
+  `__TEXT,__info_plist` section of the built binary;
+- `launch_daemon` — the optional bundled job to pin; and
+- `plugin_bundle` — the optional plug-in bundle to pin. It names the bundle's
+  exact path, code signing identifier, and `CFBundlePackageType`, and is
+  mutually exclusive with `launch_daemon`: a HAL plug-in is loaded by
+  `coreaudiod`, not registered with launchd. A plug-in carries its identity in
+  its bundle `Contents/Info.plist` rather than a `__TEXT,__info_plist` section —
+  its Mach-O is a plain loadable bundle and is universal — so the preflight pins
+  that plist instead.
 
 The secretless preflight then:
 
@@ -171,7 +180,12 @@ The secretless preflight then:
 - still fails on any Mach-O or executable file that is not declared;
 - pins a declared launch daemon by `Label` and `BundleProgram`, requires the
   program to be the declared nested executable, and rejects `Program` and
-  `ProgramArguments` because both can point outside the bundle; and
+  `ProgramArguments` because both can point outside the bundle;
+- pins a declared `plugin_bundle` by re-reading its `Contents/Info.plist` and
+  requiring `CFBundleIdentifier`, `CFBundlePackageType`, and `CFBundleExecutable`
+  to match the profile, then records that plist's SHA-256; the bundle directory
+  is allowed through the nested-bundle check only at its exact declared path, so
+  a miscased or undeclared `.driver` is still rejected; and
 - allowlists the launchd job directories by exact path. A job plist is neither
   Mach-O nor executable, so the checks above cannot see it. Any file or
   directory under `Contents/Library/LaunchDaemons` or
