@@ -71,7 +71,11 @@ LAUNCH_JOB_DIRECTORIES = (LAUNCH_DAEMON_DIRECTORY, "Contents/Library/LaunchAgent
 # implements the full Unicode fold APFS uses; str.lower() would miss folds such
 # as U+017F LATIN SMALL LETTER LONG S onto "s".
 LAUNCH_JOB_PREFIXES = tuple(directory.casefold() for directory in LAUNCH_JOB_DIRECTORIES)
-FORBIDDEN_LAUNCH_DAEMON_KEYS = ("Program", "ProgramArguments")
+LAUNCH_DAEMON_FIELDS = {"path", "label", "mach_services"}
+# A root job definition is policy, so the plist may carry only keys a reviewed
+# profile pins. Everything else -- RunAtLoad, KeepAlive, EnvironmentVariables,
+# Sockets, StandardOutPath -- is rejected rather than signed unreviewed.
+LAUNCH_DAEMON_REQUIRED_KEYS = {"Label", "BundleProgram"}
 
 
 class BrokerError(RuntimeError):
@@ -293,8 +297,11 @@ def validate_nested_executable_policy(name: str, profile: dict[str, Any]) -> Non
         daemon = spec.get("launch_daemon")
         if daemon is None:
             continue
-        if not isinstance(daemon, dict) or set(daemon) != {"path", "label"}:
-            fail(f"Profile {name} launch_daemon must declare exactly path and label.")
+        if not isinstance(daemon, dict) or not {"path", "label"} <= set(daemon) <= LAUNCH_DAEMON_FIELDS:
+            fail(
+                f"Profile {name} launch_daemon must declare path and label, "
+                f"and may only add mach_services."
+            )
         daemon_path = daemon["path"]
         if not isinstance(daemon_path, str) or not BUNDLE_RELATIVE_PATH_PATTERN.fullmatch(daemon_path):
             fail(f"Profile {name} has an unsafe launch daemon path: {daemon_path!r}")
@@ -305,6 +312,16 @@ def validate_nested_executable_policy(name: str, profile: dict[str, Any]) -> Non
         claimed.add(daemon_path)
         if not CODE_IDENTIFIER_PATTERN.fullmatch(str(daemon["label"])):
             fail(f"Profile {name} has an invalid launch daemon label: {daemon['label']!r}")
+        services = daemon.get("mach_services")
+        if services is None:
+            continue
+        if not isinstance(services, list) or not services:
+            fail(f"Profile {name} launch daemon mach_services must be a non-empty list.")
+        if len(set(services)) != len(services):
+            fail(f"Profile {name} launch daemon declares a duplicate Mach service.")
+        for service in services:
+            if not isinstance(service, str) or not CODE_IDENTIFIER_PATTERN.fullmatch(service):
+                fail(f"Profile {name} has an invalid Mach service name: {service!r}")
 
 
 def validate_tag(tag: str) -> str:
@@ -1046,9 +1063,19 @@ def validate_launch_daemon(app_path: Path, spec: dict[str, Any]) -> dict[str, An
         fail(f"Launch daemon plist is invalid: {daemon['path']}: {error}")
     if not isinstance(job, dict):
         fail(f"Launch daemon plist must be a dictionary: {daemon['path']}")
-    for key in FORBIDDEN_LAUNCH_DAEMON_KEYS:
-        if key in job:
-            fail(f"Launch daemon plist must not declare {key}: {daemon['path']}")
+    services = daemon.get("mach_services")
+    allowed = set(LAUNCH_DAEMON_REQUIRED_KEYS)
+    if services:
+        allowed.add("MachServices")
+    unreviewed = sorted(set(job) - allowed)
+    if unreviewed:
+        fail(
+            f"Launch daemon plist declares unreviewed keys in {daemon['path']}: "
+            f"{', '.join(unreviewed)}"
+        )
+    missing = sorted(LAUNCH_DAEMON_REQUIRED_KEYS - set(job))
+    if missing:
+        fail(f"Launch daemon plist is missing required keys in {daemon['path']}: {', '.join(missing)}")
     if job.get("Label") != daemon["label"]:
         fail(
             f"Launch daemon label mismatch in {daemon['path']}: "
@@ -1059,11 +1086,29 @@ def validate_launch_daemon(app_path: Path, spec: dict[str, Any]) -> dict[str, An
             f"Launch daemon BundleProgram mismatch in {daemon['path']}: "
             f"expected {spec['path']!r}, got {job.get('BundleProgram')!r}"
         )
-    return {
+    if services:
+        vested = job.get("MachServices")
+        if not isinstance(vested, dict):
+            fail(f"Launch daemon MachServices must be a dictionary in {daemon['path']}.")
+        if sorted(vested) != sorted(services):
+            fail(
+                f"Launch daemon MachServices mismatch in {daemon['path']}: "
+                f"expected {sorted(services)}, got {sorted(vested)}"
+            )
+        for service, value in vested.items():
+            if value is not True:
+                fail(
+                    f"Launch daemon Mach service {service} must be declared true "
+                    f"in {daemon['path']}."
+                )
+    record = {
         "path": daemon["path"],
         "label": daemon["label"],
         "sha256": sha256_file(plist_path),
     }
+    if services:
+        record["mach_services"] = sorted(services)
+    return record
 
 
 def validate_plugin_bundle(app_path: Path, spec: dict[str, Any]) -> dict[str, Any]:
