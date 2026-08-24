@@ -43,22 +43,34 @@ MACHO_MAGICS = {
     b"\xbf\xba\xfe\xca",
 }
 # A nested bundle is rejected for every profile unless a reviewed profile names
-# it exactly. ".driver" is a CoreAudio HAL plug-in bundle; it is listed here so
-# that an undeclared one is rejected like any other nested bundle, and allowed
-# only when a profile pins it through a `plugin_bundle` declaration.
-NESTED_BUNDLE_SUFFIXES = (".app", ".appex", ".bundle", ".driver", ".framework", ".xpc")
+# it exactly. ".driver" is a CoreAudio HAL plug-in bundle and ".systemextension"
+# is a System Extension; both are listed here so that an undeclared one is
+# rejected like any other nested bundle, and allowed only when a profile pins it
+# through a `plugin_bundle` declaration.
+NESTED_BUNDLE_SUFFIXES = (
+    ".app",
+    ".appex",
+    ".bundle",
+    ".driver",
+    ".framework",
+    ".systemextension",
+    ".xpc",
+)
 # Slice names a profile may declare in `architectures`. Every profile has been
 # arm64-only, but a system audio HAL plug-in has to load on Intel Macs too, so a
 # profile may declare a universal binary from this closed set. The set is closed
 # because `lipo -archs` output is compared against it exactly.
 ALLOWED_ARCHITECTURES = ("arm64", "x86_64")
-# Bundle suffixes a profile may pin as a `plugin_bundle`. Kept to the CoreAudio
-# HAL plug-in extension so the allowance cannot be used to smuggle an undeclared
-# .app or .framework past the nested-bundle check by relabelling it.
-PLUGIN_BUNDLE_SUFFIXES = (".driver",)
-# CFBundlePackageType values a pinned plug-in bundle may declare. A HAL plug-in
-# is a loadable bundle ("BNDL"); an application ("APPL") is never a plug-in.
-ALLOWED_PLUGIN_PACKAGE_TYPES = {"BNDL"}
+# Bundle suffixes a profile may pin as a `plugin_bundle`, each mapped to the one
+# CFBundlePackageType it may carry. Kept to the two kinds of loadable code an
+# application is allowed to embed here — a CoreAudio HAL plug-in and a System
+# Extension — so the allowance cannot be used to smuggle an undeclared .app or
+# .framework past the nested-bundle check by relabelling it. The mapping is
+# exact rather than two independent sets, so a bundle cannot claim the suffix of
+# one kind and the package type of the other. An application ("APPL") is never
+# embeddable and appears in neither.
+PLUGIN_BUNDLE_PACKAGE_TYPES = {".driver": "BNDL", ".systemextension": "SYSX"}
+PLUGIN_BUNDLE_SUFFIXES = tuple(PLUGIN_BUNDLE_PACKAGE_TYPES)
 TEAM_ID_PATTERN = re.compile(r"^[A-Z0-9]{10}$")
 CODE_IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$")
 BUNDLE_RELATIVE_PATH_PATTERN = re.compile(
@@ -116,6 +128,7 @@ def load_profiles() -> dict[str, Any]:
         "md2loop-xcode",
         "openconnct-make",
         "opendefendrwatchr-swiftpm",
+        "openlens-xcode",
         "openwritr-swiftpm",
         "ptionsplus-xcode",
         "spacemender-xcode",
@@ -270,7 +283,15 @@ def validate_nested_executable_policy(name: str, profile: dict[str, Any]) -> Non
             plugin_path = plugin["path"]
             if not isinstance(plugin_path, str) or not BUNDLE_RELATIVE_PATH_PATTERN.fullmatch(plugin_path):
                 fail(f"Profile {name} has an unsafe plugin_bundle path: {plugin_path!r}")
-            if not PurePosixPath(plugin_path).name.casefold().endswith(PLUGIN_BUNDLE_SUFFIXES):
+            plugin_suffix = next(
+                (
+                    suffix
+                    for suffix in PLUGIN_BUNDLE_SUFFIXES
+                    if PurePosixPath(plugin_path).name.casefold().endswith(suffix)
+                ),
+                None,
+            )
+            if plugin_suffix is None:
                 fail(
                     f"Profile {name} plugin_bundle must be a plug-in bundle ending in one of "
                     f"{', '.join(PLUGIN_BUNDLE_SUFFIXES)}."
@@ -283,10 +304,11 @@ def validate_nested_executable_policy(name: str, profile: dict[str, Any]) -> Non
                 fail(
                     f"Profile {name} plugin_bundle executable must live under {expected_prefix}."
                 )
-            if plugin["package_type"] not in ALLOWED_PLUGIN_PACKAGE_TYPES:
+            expected_package_type = PLUGIN_BUNDLE_PACKAGE_TYPES[plugin_suffix]
+            if plugin["package_type"] != expected_package_type:
                 fail(
-                    f"Profile {name} plugin_bundle package_type must be one of "
-                    f"{', '.join(sorted(ALLOWED_PLUGIN_PACKAGE_TYPES))}."
+                    f"Profile {name} plugin_bundle {plugin_suffix} must declare package_type "
+                    f"{expected_package_type}."
                 )
             if not CODE_IDENTIFIER_PATTERN.fullmatch(str(plugin["identifier"])):
                 fail(f"Profile {name} has an invalid plugin_bundle identifier: {plugin['identifier']!r}")
@@ -714,6 +736,36 @@ def build_ptionsplus(
     return derived_data / "Build" / "Products" / "Release" / profile["bundle_name"]
 
 
+def build_openlens(
+    source: Path, work: Path, profile: dict[str, Any], version: str, build_number: str
+) -> Path:
+    # Built from the committed project for the same reason as build_spacemender:
+    # OpenLens generates its .xcodeproj with XcodeGen, which is not on the runner
+    # image, so the project is committed and this adapter drives it directly. The
+    # scheme builds the app and its camera system extension and embeds the latter
+    # under Contents/Library/SystemExtensions; preflight pins that path.
+    ensure_source_file(source, "OpenLens.xcodeproj/project.pbxproj")
+    derived_data = work / "DerivedData"
+    run(
+        [
+            "xcodebuild",
+            "-project",
+            "OpenLens.xcodeproj",
+            "-scheme",
+            "OpenLens",
+            "-configuration",
+            "Release",
+            "-derivedDataPath",
+            str(derived_data),
+            "clean",
+            "build",
+        ]
+        + xcodebuild_settings(profile, version, build_number),
+        cwd=source,
+    )
+    return derived_data / "Build" / "Products" / "Release" / profile["bundle_name"]
+
+
 def build_spacemender(
     source: Path, work: Path, profile: dict[str, Any], version: str, build_number: str
 ) -> Path:
@@ -829,6 +881,8 @@ def command_build(args: argparse.Namespace) -> None:
             built_app = build_openconnct(source, work, profile, version, args.build_number)
         elif adapter == "opendefendrwatchr-swiftpm":
             built_app = assemble_opendefendrwatchr(source, work, profile, version)
+        elif adapter == "openlens-xcode":
+            built_app = build_openlens(source, work, profile, version, args.build_number)
         elif adapter == "openwritr-swiftpm":
             built_app = assemble_openwritr(source, work, profile)
         elif adapter == "ptionsplus-xcode":
