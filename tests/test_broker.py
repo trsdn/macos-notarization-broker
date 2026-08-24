@@ -80,6 +80,7 @@ class ProfileTests(unittest.TestCase):
                 "md2loop",
                 "openconnct",
                 "opendefendrwatchr",
+                "openlens",
                 "openwritr",
                 "ptionsplus",
                 "spacemender",
@@ -94,6 +95,7 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(profiles["openconnct"]["repository_id"], 1342923126)
         self.assertEqual(profiles["openwritr"]["repository_id"], 1165782217)
         self.assertEqual(profiles["ptionsplus"]["repository_id"], 1165009675)
+        self.assertEqual(profiles["openlens"]["repository_id"], 1341576271)
         self.assertEqual(profiles["spacemender"]["repository_id"], 1339151393)
         self.assertEqual(profiles["teleprompter"]["repository_id"], 1339874326)
 
@@ -137,13 +139,14 @@ class ProfileTests(unittest.TestCase):
 
     def test_profiles_shipping_nested_code_are_declared(self) -> None:
         # spacemender ships a privileged XPC helper; openconnct ships a CoreAudio
-        # HAL plug-in. Any new profile that embeds nested code must be added here
-        # deliberately so the extra signing and validation surface is reviewed.
+        # HAL plug-in; openlens ships a camera system extension. Any new profile
+        # that embeds nested code must be added here deliberately so the extra
+        # signing and validation surface is reviewed.
         profiles = broker.load_profiles()
         shipping = {
             name for name, profile in profiles.items() if profile.get("nested_executables")
         }
-        self.assertEqual(shipping, {"openconnct", "spacemender"})
+        self.assertEqual(shipping, {"openconnct", "openlens", "spacemender"})
 
     def test_spacemender_declares_exactly_one_privileged_helper(self) -> None:
         profile = broker.load_profiles()["spacemender"]
@@ -514,6 +517,63 @@ class NestedExecutablePolicyTests(unittest.TestCase):
         profile = self.plugin_profile()
         profile["nested_executables"][0]["plugin_bundle"]["path"] = "../evil.driver"
         self.assert_rejected(profile)
+
+    def system_extension_profile(self, **overrides: object) -> dict:
+        # A camera System Extension: same shape as a HAL plug-in, but launchd-free
+        # and carrying the SYSX package type instead of BNDL.
+        profile: dict = {
+            "executable": "Demo",
+            "bundle_identifier": "com.example.Demo",
+            "team_id": "ABCDE12345",
+            "nested_executables": [
+                {
+                    "path": (
+                        "Contents/Library/SystemExtensions/com.example.Demo.camera"
+                        ".systemextension/Contents/MacOS/com.example.Demo.camera"
+                    ),
+                    "identifier": "com.example.Demo.camera",
+                    "entitlements": "entitlements/teleprompter.plist",
+                    "plugin_bundle": {
+                        "path": (
+                            "Contents/Library/SystemExtensions/com.example.Demo.camera"
+                            ".systemextension"
+                        ),
+                        "identifier": "com.example.Demo.camera",
+                        "package_type": "SYSX",
+                    },
+                }
+            ],
+        }
+        profile.update(overrides)
+        return profile
+
+    def test_system_extension_policy_is_accepted(self) -> None:
+        broker.validate_nested_executable_policy("demo", self.system_extension_profile())
+
+    def test_system_extension_must_declare_the_sysx_package_type(self) -> None:
+        profile = self.system_extension_profile()
+        profile["nested_executables"][0]["plugin_bundle"]["package_type"] = "BNDL"
+        self.assert_rejected(profile)
+
+    def test_plugin_suffix_and_package_type_must_agree(self) -> None:
+        # The two kinds are pinned to each other, so a bundle cannot borrow the
+        # suffix of one and the package type of the other.
+        profile = self.plugin_profile()
+        profile["nested_executables"][0]["plugin_bundle"]["package_type"] = "SYSX"
+        self.assert_rejected(profile)
+
+    def test_an_application_is_never_an_embeddable_bundle(self) -> None:
+        for profile in (self.plugin_profile(), self.system_extension_profile()):
+            with self.subTest(profile=profile["nested_executables"][0]["identifier"]):
+                profile["nested_executables"][0]["plugin_bundle"]["package_type"] = "APPL"
+                self.assert_rejected(profile)
+
+    def test_every_pinnable_suffix_is_also_a_policed_nested_bundle(self) -> None:
+        # A suffix that may be pinned but is not policed as a nested bundle would
+        # be allowed through undeclared, which is the opposite of the intent.
+        for suffix in broker.PLUGIN_BUNDLE_SUFFIXES:
+            with self.subTest(suffix=suffix):
+                self.assertIn(suffix, broker.NESTED_BUNDLE_SUFFIXES)
 
 
 class EmbeddedInfoPlistTests(unittest.TestCase):

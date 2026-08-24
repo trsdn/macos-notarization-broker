@@ -221,6 +221,48 @@
           "name": "OpenConnct-v{version}-macOS-universal.dmg"
         }
       ]
+    },
+    "openlens": {
+      "repository": "trsdn/OpenLens",
+      "repository_id": 1341576271,
+      "build_adapter": "openlens-xcode",
+      "team_id": "G69Z5BNY97",
+      "bundle_name": "OpenLens.app",
+      "bundle_identifier": "com.trsdn.openlens",
+      "bundle_display_name": "OpenLens",
+      "executable": "OpenLens",
+      "package_type": "APPL",
+      "architectures": [
+        "arm64"
+      ],
+      "minimum_system_version": "14.0",
+      "entitlements": "entitlements/openlens.plist",
+      "nested_executables": [
+        {
+          "path": "Contents/Library/SystemExtensions/com.trsdn.openlens.camera.systemextension/Contents/MacOS/com.trsdn.openlens.camera",
+          "identifier": "com.trsdn.openlens.camera",
+          "entitlements": "entitlements/openlens-camera.plist",
+          "plugin_bundle": {
+            "path": "Contents/Library/SystemExtensions/com.trsdn.openlens.camera.systemextension",
+            "identifier": "com.trsdn.openlens.camera",
+            "package_type": "SYSX"
+          }
+        }
+      ],
+      "dmg_volume_name": "OpenLens",
+      "max_archive_bytes": 134217728,
+      "max_uncompressed_bytes": 268435456,
+      "max_files": 2000,
+      "artifacts": [
+        {
+          "type": "zip",
+          "name": "OpenLens-v{version}-macOS-arm64.zip"
+        },
+        {
+          "type": "dmg",
+          "name": "OpenLens-v{version}-macOS-arm64.dmg"
+        }
+      ]
     }
   }
 }

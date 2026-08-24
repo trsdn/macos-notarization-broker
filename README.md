@@ -63,7 +63,8 @@ entitlement policy, minimum macOS version, or dependency contract requires a
 reviewed profile update.
 
 A profile may declare `nested_executables` to ship a second binary, such as a
-privileged launch daemon helper or a CoreAudio HAL plug-in bundle. Each entry
+privileged launch daemon helper, a CoreAudio HAL plug-in bundle, or a System
+Extension. Each entry
 names an exact bundle-relative path; anything Mach-O or executable that is not
 declared is still rejected, and the signing job works inside-out over digests
 the secretless preflight recorded. A profile may also be universal: an entry in

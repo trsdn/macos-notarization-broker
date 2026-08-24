@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.app-sandbox</key>
+	<true/>
+	<!-- The extension needs nothing but the shared container it uses to receive
+	     frames from the app: no camera access of its own, no network. -->
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>G69Z5BNY97.com.trsdn.openlens</string>
+	</array>
+</dict>
+</plist>
