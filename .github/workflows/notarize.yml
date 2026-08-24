@@ -12,6 +12,7 @@ on:
           - md2loop
           - openconnct
           - opendefendrwatchr
+          - openlens
           - openwritr
           - ptionsplus
           - spacemender

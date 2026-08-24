@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- The app installs and activates its own camera system extension. -->
+	<key>com.apple.developer.system-extension.install</key>
+	<true/>
+	<key>com.apple.security.app-sandbox</key>
+	<true/>
+	<!-- Shared with the extension so the two halves can hand frames across. -->
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>G69Z5BNY97.com.trsdn.openlens</string>
+	</array>
+	<key>com.apple.security.device.camera</key>
+	<true/>
+	<!-- Opening an overlay image the user picked. Read-only and user-selected. -->
+	<key>com.apple.security.files.user-selected.read-only</key>
+	<true/>
+	<!-- Elgato Key Lights are found over Bonjour and driven over plain HTTP on
+	     the local network; a sandboxed app gets neither without this. -->
+	<key>com.apple.security.network.client</key>
+	<true/>
+</dict>
+</plist>
