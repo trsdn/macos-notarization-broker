@@ -43,10 +43,10 @@ MACHO_MAGICS = {
     b"\xbf\xba\xfe\xca",
 }
 # A nested bundle is rejected for every profile unless a reviewed profile names
-# it exactly. ".driver" is a CoreAudio HAL plug-in bundle and ".systemextension"
-# is a System Extension; both are listed here so that an undeclared one is
-# rejected like any other nested bundle, and allowed only when a profile pins it
-# through a `plugin_bundle` declaration.
+# it exactly. ".appex" is an app extension, ".driver" is a CoreAudio HAL plug-in
+# bundle and ".systemextension" is a System Extension; all three are listed here
+# so that an undeclared one is rejected like any other nested bundle, and allowed
+# only when a profile pins it through a `plugin_bundle` declaration.
 NESTED_BUNDLE_SUFFIXES = (
     ".app",
     ".appex",
@@ -62,14 +62,16 @@ NESTED_BUNDLE_SUFFIXES = (
 # because `lipo -archs` output is compared against it exactly.
 ALLOWED_ARCHITECTURES = ("arm64", "x86_64")
 # Bundle suffixes a profile may pin as a `plugin_bundle`, each mapped to the one
-# CFBundlePackageType it may carry. Kept to the two kinds of loadable code an
-# application is allowed to embed here — a CoreAudio HAL plug-in and a System
-# Extension — so the allowance cannot be used to smuggle an undeclared .app or
-# .framework past the nested-bundle check by relabelling it. The mapping is
-# exact rather than two independent sets, so a bundle cannot claim the suffix of
-# one kind and the package type of the other. An application ("APPL") is never
-# embeddable and appears in neither.
-PLUGIN_BUNDLE_PACKAGE_TYPES = {".driver": "BNDL", ".systemextension": "SYSX"}
+# CFBundlePackageType it may carry. Kept to the three kinds of loadable code an
+# application is allowed to embed here — an app extension, a CoreAudio HAL
+# plug-in and a System Extension — so the allowance cannot be used to smuggle an
+# undeclared .app or .framework past the nested-bundle check by relabelling it.
+# An app extension is hosted out of process by its owner (Safari, in the case of
+# a web extension), which is why it carries the XPC bundle type rather than a
+# plain "BNDL". The mapping is exact rather than two independent sets, so a
+# bundle cannot claim the suffix of one kind and the package type of the other.
+# An application ("APPL") is never embeddable and appears in neither.
+PLUGIN_BUNDLE_PACKAGE_TYPES = {".appex": "XPC!", ".driver": "BNDL", ".systemextension": "SYSX"}
 PLUGIN_BUNDLE_SUFFIXES = tuple(PLUGIN_BUNDLE_PACKAGE_TYPES)
 TEAM_ID_PATTERN = re.compile(r"^[A-Z0-9]{10}$")
 CODE_IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$")
@@ -125,6 +127,7 @@ def load_profiles() -> dict[str, Any]:
         "artifacts",
     }
     allowed_adapters = {
+        "better-kampfinsel-xcode",
         "md2loop-xcode",
         "openconnct-make",
         "opendefendrwatchr-swiftpm",
@@ -854,6 +857,44 @@ def build_openconnct(
     return app
 
 
+def build_better_kampfinsel(
+    source: Path, work: Path, profile: dict[str, Any], version: str, build_number: str
+) -> Path:
+    # Built from the committed project for the same reason as build_spacemender.
+    # The web payload deserves a note of its own: content.js is rolled up from
+    # src/modules by a Node script, but the rolled-up file is committed under
+    # extension/ and the Xcode target merely copies that directory into the appex.
+    # So this adapter needs no Node toolchain and installs no dependencies, which
+    # keeps the untrusted build job on preinstalled tooling only. The two payload
+    # files are pinned here so a checkout that lost them fails loudly instead of
+    # producing a carrier app with an empty extension. The scheme builds the app
+    # and its Safari extension and embeds the latter under Contents/PlugIns;
+    # preflight pins that path.
+    project = "safari/better kampfinsel/better kampfinsel.xcodeproj"
+    ensure_source_file(source, f"{project}/project.pbxproj")
+    ensure_source_file(source, "extension/manifest.json")
+    ensure_source_file(source, "extension/content.js")
+    derived_data = work / "DerivedData"
+    run(
+        [
+            "xcodebuild",
+            "-project",
+            project,
+            "-scheme",
+            "better kampfinsel",
+            "-configuration",
+            "Release",
+            "-derivedDataPath",
+            str(derived_data),
+            "clean",
+            "build",
+        ]
+        + xcodebuild_settings(profile, version, build_number),
+        cwd=source,
+    )
+    return derived_data / "Build" / "Products" / "Release" / profile["bundle_name"]
+
+
 def command_build(args: argparse.Namespace) -> None:
     require_tools(["ditto", "file", "git", "lipo", "swift", "xcodebuild"])
     version = validate_tag(f"v{args.version}")
@@ -875,7 +916,9 @@ def command_build(args: argparse.Namespace) -> None:
     with tempfile.TemporaryDirectory(prefix="broker-build-") as temporary:
         work = Path(temporary)
         adapter = profile["build_adapter"]
-        if adapter == "md2loop-xcode":
+        if adapter == "better-kampfinsel-xcode":
+            built_app = build_better_kampfinsel(source, work, profile, version, args.build_number)
+        elif adapter == "md2loop-xcode":
             built_app = build_md2loop(source, work, profile, version, args.build_number)
         elif adapter == "openconnct-make":
             built_app = build_openconnct(source, work, profile, version, args.build_number)

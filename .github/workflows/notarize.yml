@@ -9,6 +9,7 @@ on:
         required: true
         type: choice
         options:
+          - better-kampfinsel
           - md2loop
           - openconnct
           - opendefendrwatchr
