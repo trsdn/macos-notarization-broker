@@ -77,6 +77,7 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(
             set(profiles),
             {
+                "better-kampfinsel",
                 "md2loop",
                 "openconnct",
                 "opendefendrwatchr",
@@ -98,6 +99,7 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(profiles["openlens"]["repository_id"], 1341576271)
         self.assertEqual(profiles["spacemender"]["repository_id"], 1339151393)
         self.assertEqual(profiles["teleprompter"]["repository_id"], 1339874326)
+        self.assertEqual(profiles["better-kampfinsel"]["repository_id"], 1345283003)
 
     def test_artifact_names_preserve_existing_release_contracts(self) -> None:
         profiles = broker.load_profiles()
@@ -136,17 +138,90 @@ class ProfileTests(unittest.TestCase):
                 "OpenConnct-v{version}-macOS-universal.dmg",
             ],
         )
+        self.assertEqual(
+            names["better-kampfinsel"],
+            [
+                "better-kampfinsel-v{version}-macOS-arm64.zip",
+                "better-kampfinsel-v{version}-macOS-arm64.dmg",
+            ],
+        )
 
     def test_profiles_shipping_nested_code_are_declared(self) -> None:
         # spacemender ships a privileged XPC helper; openconnct ships a CoreAudio
-        # HAL plug-in; openlens ships a camera system extension. Any new profile
+        # HAL plug-in; openlens ships a camera system extension; better-kampfinsel
+        # ships a Safari web extension appex. Any new profile
         # that embeds nested code must be added here deliberately so the extra
         # signing and validation surface is reviewed.
         profiles = broker.load_profiles()
         shipping = {
             name for name, profile in profiles.items() if profile.get("nested_executables")
         }
-        self.assertEqual(shipping, {"openconnct", "openlens", "spacemender"})
+        self.assertEqual(
+            shipping,
+            {"better-kampfinsel", "openconnct", "openlens", "spacemender"},
+        )
+
+    def test_better_kampfinsel_declares_exactly_one_safari_extension(self) -> None:
+        """The carrier app embeds one appex and nothing else.
+
+        A Safari web extension is only trustworthy if the payload Safari loads is
+        the payload that was reviewed, so the appex is pinned by path, identifier
+        and package type. XPC! is what an app extension declares; anything else
+        under Contents/PlugIns would be a different kind of nested code and has to
+        be argued for separately.
+        """
+        profile = broker.load_profiles()["better-kampfinsel"]
+        specs = profile["nested_executables"]
+        self.assertEqual(len(specs), 1)
+        spec = specs[0]
+        self.assertEqual(
+            spec["plugin_bundle"]["path"],
+            "Contents/PlugIns/better kampfinsel Extension.appex",
+        )
+        self.assertEqual(spec["plugin_bundle"]["package_type"], "XPC!")
+        self.assertEqual(spec["identifier"], "com.trsdn.better-kampfinsel.Extension")
+        self.assertEqual(spec["plugin_bundle"]["identifier"], spec["identifier"])
+        # The extension must stay inside the carrier's identifier namespace;
+        # Safari refuses to load an appex that claims an unrelated identity.
+        self.assertTrue(spec["identifier"].startswith(profile["bundle_identifier"] + "."))
+
+    def test_better_kampfinsel_extension_holds_no_network_entitlement(self) -> None:
+        """The extension process never opens a connection of its own.
+
+        Its content script runs in Safari's page context, not in the appex, and it
+        only reads numbers the game already rendered. Granting the appex outgoing
+        network access would widen the sandbox past anything the code does, so the
+        absence is asserted rather than left to reviewer memory.
+        """
+        profile = broker.load_profiles()["better-kampfinsel"]
+        spec = profile["nested_executables"][0]
+        path = broker.safe_profile_path(spec["entitlements"])
+        entitlements = plistlib.loads(path.read_bytes())
+        self.assertTrue(entitlements["com.apple.security.app-sandbox"])
+        self.assertNotIn("com.apple.security.network.client", entitlements)
+        self.assertNotIn("com.apple.security.network.server", entitlements)
+
+    def test_no_profile_ships_the_debug_entitlement(self) -> None:
+        """get-task-allow lets a debugger attach, and notarization rejects it.
+
+        A local Xcode build sets it by default, so it is exactly the flag that
+        travels unnoticed from a developer machine into a profile's entitlements.
+        """
+        profiles = broker.load_profiles()
+        for name, profile in profiles.items():
+            paths = [profile["entitlements"]]
+            paths += [
+                spec["entitlements"]
+                for spec in profile.get("nested_executables", [])
+                if "entitlements" in spec
+            ]
+            for relative in paths:
+                entitlements = plistlib.loads(broker.safe_profile_path(relative).read_bytes())
+                self.assertNotIn(
+                    "com.apple.security.get-task-allow",
+                    entitlements,
+                    f"{name} ships the debug entitlement in {relative}",
+                )
 
     def test_spacemender_declares_exactly_one_privileged_helper(self) -> None:
         profile = broker.load_profiles()["spacemender"]

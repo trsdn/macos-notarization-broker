@@ -263,6 +263,48 @@
           "name": "OpenLens-v{version}-macOS-arm64.dmg"
         }
       ]
+    },
+    "better-kampfinsel": {
+      "repository": "trsdn/better-kampfinsel",
+      "repository_id": 1345283003,
+      "build_adapter": "better-kampfinsel-xcode",
+      "bundle_name": "better kampfinsel.app",
+      "bundle_identifier": "com.trsdn.better-kampfinsel",
+      "bundle_display_name": "better kampfinsel",
+      "executable": "better kampfinsel",
+      "package_type": "APPL",
+      "architectures": [
+        "arm64"
+      ],
+      "minimum_system_version": "26.5",
+      "team_id": "G69Z5BNY97",
+      "entitlements": "entitlements/better-kampfinsel.plist",
+      "nested_executables": [
+        {
+          "path": "Contents/PlugIns/better kampfinsel Extension.appex/Contents/MacOS/better kampfinsel Extension",
+          "identifier": "com.trsdn.better-kampfinsel.Extension",
+          "entitlements": "entitlements/better-kampfinsel-extension.plist",
+          "plugin_bundle": {
+            "path": "Contents/PlugIns/better kampfinsel Extension.appex",
+            "identifier": "com.trsdn.better-kampfinsel.Extension",
+            "package_type": "XPC!"
+          }
+        }
+      ],
+      "dmg_volume_name": "better kampfinsel",
+      "max_archive_bytes": 16777216,
+      "max_uncompressed_bytes": 33554432,
+      "max_files": 500,
+      "artifacts": [
+        {
+          "type": "zip",
+          "name": "better-kampfinsel-v{version}-macOS-arm64.zip"
+        },
+        {
+          "type": "dmg",
+          "name": "better-kampfinsel-v{version}-macOS-arm64.dmg"
+        }
+      ]
     }
   }
 }
