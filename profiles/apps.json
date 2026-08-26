@@ -305,6 +305,35 @@
           "name": "better-kampfinsel-v{version}-macOS-arm64.dmg"
         }
       ]
+    },
+    "openswitchr": {
+      "repository": "trsdn/OpenSwitchr",
+      "repository_id": 1342585430,
+      "build_adapter": "openswitchr-swiftpm",
+      "bundle_name": "OpenSwitchr.app",
+      "bundle_identifier": "com.openswitchr.app",
+      "bundle_display_name": "OpenSwitchr",
+      "executable": "OpenSwitchr",
+      "package_type": "APPL",
+      "architectures": [
+        "arm64"
+      ],
+      "minimum_system_version": "15.0",
+      "entitlements": "entitlements/openswitchr.plist",
+      "dmg_volume_name": "OpenSwitchr",
+      "max_archive_bytes": 1073741824,
+      "max_uncompressed_bytes": 2147483648,
+      "max_files": 5000,
+      "artifacts": [
+        {
+          "type": "zip",
+          "name": "OpenSwitchr-v{version}-macOS-arm64.zip"
+        },
+        {
+          "type": "dmg",
+          "name": "OpenSwitchr-v{version}-macOS-arm64.dmg"
+        }
+      ]
     }
   }
 }

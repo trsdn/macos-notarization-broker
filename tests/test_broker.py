@@ -82,6 +82,7 @@ class ProfileTests(unittest.TestCase):
                 "openconnct",
                 "opendefendrwatchr",
                 "openlens",
+                "openswitchr",
                 "openwritr",
                 "ptionsplus",
                 "spacemender",
@@ -94,6 +95,7 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(profiles["md2loop"]["repository_id"], 1168645937)
         self.assertEqual(profiles["opendefendrwatchr"]["repository_id"], 1342759464)
         self.assertEqual(profiles["openconnct"]["repository_id"], 1342923126)
+        self.assertEqual(profiles["openswitchr"]["repository_id"], 1342585430)
         self.assertEqual(profiles["openwritr"]["repository_id"], 1165782217)
         self.assertEqual(profiles["ptionsplus"]["repository_id"], 1165009675)
         self.assertEqual(profiles["openlens"]["repository_id"], 1341576271)
@@ -117,6 +119,13 @@ class ProfileTests(unittest.TestCase):
             [
                 "OpenWritr-v{version}-macOS-arm64.zip",
                 "OpenWritr-v{version}-macOS-arm64.dmg",
+            ],
+        )
+        self.assertEqual(
+            names["openswitchr"],
+            [
+                "OpenSwitchr-v{version}-macOS-arm64.zip",
+                "OpenSwitchr-v{version}-macOS-arm64.dmg",
             ],
         )
         self.assertEqual(names["ptionsplus"], ["Ptions+.zip", "Ptions+.dmg"])
