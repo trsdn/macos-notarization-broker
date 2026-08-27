@@ -1389,5 +1389,54 @@ class BuildAdapterTests(unittest.TestCase):
                     )
 
 
+class HandoffRetentionTests(unittest.TestCase):
+    """Intermediate artifacts must outlive the approval the sign job waits for.
+
+    The sign job sits behind the macos-signing environment and pins its input
+    by artifact ID, so it downloads exactly the bundle preflight validated and
+    nothing else. GitHub holds a gated run for up to 30 days waiting for a
+    human. When retention was two days, approving on the third day produced a
+    run that had passed every check and then died on "None of the provided
+    artifact IDs were found" -- the approval was honoured, the artifact was
+    already swept, and there is no way to recover that run because the pinned
+    ID can never exist again.
+    """
+
+    APPROVAL_WINDOW_DAYS = 30
+
+    # The uploads that one job hands to another, by step name. The notarized
+    # output is deliberately not here: nothing waits behind a gate to consume
+    # it, request.sh collects it as soon as the run finishes.
+    HANDOFF_STEPS = {
+        "Upload untrusted unsigned bundle",
+        "Upload immutable validated bundle",
+    }
+
+    def _uploads(self) -> dict[str, int]:
+        workflow = (ROOT / ".github" / "workflows" / "notarize.yml").read_text(encoding="utf-8")
+        found: dict[str, int] = {}
+        for block in re.split(r"\n      - name: ", workflow)[1:]:
+            step_name = block.splitlines()[0].strip()
+            retention = re.search(r"retention-days:\s*(\d+)", block)
+            if "upload-artifact@" in block and retention:
+                found[step_name] = int(retention.group(1))
+        return found
+
+    def test_the_handoff_steps_are_still_the_ones_we_think(self) -> None:
+        self.assertTrue(
+            self.HANDOFF_STEPS <= set(self._uploads()),
+            "an upload step was renamed, so the retention check below silently stopped covering it",
+        )
+
+    def test_every_handoff_artifact_survives_the_approval_window(self) -> None:
+        uploads = self._uploads()
+        for step in sorted(self.HANDOFF_STEPS):
+            self.assertGreaterEqual(
+                uploads[step],
+                self.APPROVAL_WINDOW_DAYS,
+                f"{step!r} can expire while the sign job waits for approval",
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

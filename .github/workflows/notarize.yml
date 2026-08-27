@@ -154,7 +154,10 @@ jobs:
           path: unsigned/unsigned-app.zip
           if-no-files-found: error
           compression-level: 0
-          retention-days: 2
+          # Must outlive the manual approval the sign job waits for. GitHub
+          # holds a gated run for up to 30 days, so anything shorter lets an
+          # approval succeed against an artifact that has already expired.
+          retention-days: 30
 
   preflight:
     name: Sanitize and validate unsigned bundle
@@ -209,7 +212,9 @@ jobs:
           path: validated/
           if-no-files-found: error
           compression-level: 0
-          retention-days: 2
+          # See the unsigned upload: this is the input the gated sign job pins
+          # by ID, so it has to survive the full approval window.
+          retention-days: 30
 
   sign:
     name: Sign and notarize with broker-owned logic
