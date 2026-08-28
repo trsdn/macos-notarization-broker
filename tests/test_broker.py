@@ -838,6 +838,65 @@ class NestedBundleValidationTests(BundleFixtureMixin, unittest.TestCase):
         with self.assertRaises(broker.BrokerError):
             self.validate(self.app, self.profile)
 
+    def _add_resource_bundle(self, name: str) -> Path:
+        bundle = self.app / "Contents" / "Resources" / name
+        bundle.mkdir(parents=True)
+        with (bundle / "Info.plist").open("wb") as handle:
+            plistlib.dump({"CFBundleIdentifier": "com.example.resources"}, handle)
+        (bundle / "PrivacyInfo.xcprivacy").write_text("<plist/>\n", encoding="utf-8")
+        return bundle
+
+    def test_undeclared_resource_bundle_is_rejected(self) -> None:
+        self._add_resource_bundle("Dep_Dep.bundle")
+        with self.assertRaises(broker.BrokerError):
+            self.validate(self.app, self.profile)
+
+    def test_declared_resource_bundle_is_accepted(self) -> None:
+        self._add_resource_bundle("Dep_Dep.bundle")
+        self.profile["nested_resource_bundles"] = [
+            {"path": "Contents/Resources/Dep_Dep.bundle"}
+        ]
+        result = self.validate(self.app, self.profile)
+        self.assertEqual(len(result["nested_executables"]), 1)
+
+    def test_declared_resource_bundle_may_not_contain_macho(self) -> None:
+        bundle = self._add_resource_bundle("Dep_Dep.bundle")
+        (bundle / "sneaky").write_bytes(self.ARM64_MACHO)
+        self.profile["nested_resource_bundles"] = [
+            {"path": "Contents/Resources/Dep_Dep.bundle"}
+        ]
+        with self.assertRaises(broker.BrokerError):
+            self.validate(self.app, self.profile)
+
+    def test_declared_resource_bundle_may_not_contain_executable_file(self) -> None:
+        bundle = self._add_resource_bundle("Dep_Dep.bundle")
+        script = bundle / "run.sh"
+        script.write_text("#!/bin/sh\n", encoding="utf-8")
+        script.chmod(0o755)
+        self.profile["nested_resource_bundles"] = [
+            {"path": "Contents/Resources/Dep_Dep.bundle"}
+        ]
+        with self.assertRaises(broker.BrokerError):
+            self.validate(self.app, self.profile)
+
+    def test_declared_resource_bundle_may_not_hide_another_bundle(self) -> None:
+        bundle = self._add_resource_bundle("Dep_Dep.bundle")
+        (bundle / "Inner.bundle").mkdir()
+        self.profile["nested_resource_bundles"] = [
+            {"path": "Contents/Resources/Dep_Dep.bundle"}
+        ]
+        with self.assertRaises(broker.BrokerError):
+            self.validate(self.app, self.profile)
+
+    def test_declared_resource_bundle_may_not_contain_symlink(self) -> None:
+        bundle = self._add_resource_bundle("Dep_Dep.bundle")
+        (bundle / "link").symlink_to("/etc/passwd")
+        self.profile["nested_resource_bundles"] = [
+            {"path": "Contents/Resources/Dep_Dep.bundle"}
+        ]
+        with self.assertRaises(broker.BrokerError):
+            self.validate(self.app, self.profile)
+
     def test_undeclared_launch_daemon_plist_is_rejected(self) -> None:
         smuggled = (
             self.app / "Contents" / "Library" / "LaunchDaemons" / "com.attacker.root.plist"
