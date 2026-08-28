@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import datetime
 import hashlib
 import json
 import os
@@ -90,6 +91,30 @@ LAUNCH_DAEMON_FIELDS = {"path", "label", "mach_services"}
 # profile pins. Everything else -- RunAtLoad, KeepAlive, EnvironmentVariables,
 # Sockets, StandardOutPath -- is rejected rather than signed unreviewed.
 LAUNCH_DAEMON_REQUIRED_KEYS = {"Label", "BundleProgram"}
+# Entitlements macOS treats as "restricted": AMFI refuses to launch a binary
+# carrying one unless the bundle embeds a provisioning profile that grants it.
+# Signing and notarization both succeed without the profile, so an app that
+# needs one and ships without it passes every check here and then fails on the
+# user's machine with a bare "Launch failed" -- which is exactly what happened
+# to OpenLens v0.1.0 and v0.1.1. Membership is what makes a profile mandatory
+# below, so the set is deliberately small and only grows with evidence.
+RESTRICTED_ENTITLEMENTS = frozenset(
+    {
+        "com.apple.developer.driverkit",
+        "com.apple.developer.endpoint-security.client",
+        "com.apple.developer.hypervisor",
+        "com.apple.developer.networking.networkextension",
+        "com.apple.developer.system-extension.install",
+        "com.apple.vm.networking",
+    }
+)
+PROVISIONING_PROFILE_FIELDS = {"secret"}
+# GitHub rejects secret names that do not match this, so a profile cannot name
+# one the workflow would silently resolve to the empty string.
+PROVISIONING_SECRET_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]{2,99}$")
+# Where an application bundle carries its profile. Apple fixes both the name and
+# the location; nothing else is read at launch.
+PROVISIONING_PROFILE_PATH = "Contents/embedded.provisionprofile"
 
 
 class BrokerError(RuntimeError):
@@ -170,6 +195,7 @@ def load_profiles() -> dict[str, Any]:
             entitlements = plistlib.load(handle)
         if not isinstance(entitlements, dict):
             fail(f"Profile {name} entitlements must be a plist dictionary.")
+        validate_provisioning_policy(name, profile, entitlements)
         if "dependency_lock" in profile:
             safe_profile_path(profile["dependency_lock"])
         if "team_id" in profile and not TEAM_ID_PATTERN.fullmatch(str(profile["team_id"])):
@@ -204,6 +230,69 @@ def safe_profile_path(relative_path: str) -> Path:
 
 def nested_executables(profile: dict[str, Any]) -> list[dict[str, Any]]:
     return profile.get("nested_executables", [])
+
+
+def restricted_entitlements(entitlements: dict[str, Any]) -> list[str]:
+    """The restricted entitlements a plist claims, in a stable order."""
+    return sorted(RESTRICTED_ENTITLEMENTS.intersection(entitlements))
+
+
+def validate_provisioning_policy(
+    name: str, profile: dict[str, Any], entitlements: dict[str, Any]
+) -> None:
+    """Refuse a profile that would sign an app macOS then refuses to launch.
+
+    A restricted entitlement is only honoured when the bundle embeds a matching
+    provisioning profile. Nothing later in this pipeline notices its absence:
+    codesign is happy, notarization is happy, Gatekeeper is happy, and the app
+    dies at exec. So the requirement is enforced here, where a reviewer sees it,
+    rather than discovered by whoever downloads the release.
+    """
+    declared = profile.get("provisioning_profile")
+    if declared is not None:
+        if not isinstance(declared, dict):
+            fail(f"Profile {name} must declare provisioning_profile as an object.")
+        unknown = set(declared) - PROVISIONING_PROFILE_FIELDS
+        if unknown:
+            fail(
+                f"Profile {name} provisioning_profile has unsupported fields: "
+                f"{', '.join(sorted(unknown))}."
+            )
+        missing = PROVISIONING_PROFILE_FIELDS - set(declared)
+        if missing:
+            fail(
+                f"Profile {name} provisioning_profile is missing fields: "
+                f"{', '.join(sorted(missing))}."
+            )
+        if not PROVISIONING_SECRET_PATTERN.fullmatch(str(declared["secret"])):
+            fail(f"Profile {name} provisioning_profile names an invalid secret.")
+        if "team_id" not in profile:
+            # The embedded profile is checked against the signing team, so a
+            # profile that ships one has to say which team it belongs to.
+            fail(f"Profile {name} must declare team_id to embed a provisioning profile.")
+
+    restricted = restricted_entitlements(entitlements)
+    if restricted and declared is None:
+        fail(
+            f"Profile {name} claims restricted entitlements without a provisioning "
+            f"profile, so the signed app would not launch: {', '.join(restricted)}."
+        )
+
+    # Only the application bundle gets a profile. A nested executable that needs
+    # one would need its own, which is not supported, so it is rejected outright
+    # instead of being signed into something that cannot run.
+    for spec in nested_executables(profile):
+        with safe_profile_path(spec["entitlements"]).open("rb") as handle:
+            nested = plistlib.load(handle)
+        if not isinstance(nested, dict):
+            fail(f"Profile {name} nested entitlements must be a plist dictionary.")
+        nested_restricted = restricted_entitlements(nested)
+        if nested_restricted:
+            fail(
+                f"Profile {name} nested executable {spec['identifier']} claims restricted "
+                f"entitlements, which the broker cannot provision: "
+                f"{', '.join(nested_restricted)}."
+            )
 
 
 def render_expected_value(template: str, profile: dict[str, Any], spec: dict[str, Any]) -> str:
@@ -545,6 +634,9 @@ def command_resolve(args: argparse.Namespace) -> None:
         "version": version,
         "request_id": request_id,
         "profile_digest": manifest["profile_digest"],
+        "provisioning_profile_secret": (profile.get("provisioning_profile") or {}).get(
+            "secret", ""
+        ),
         "artifact_name": f"{args.app}-{version}-{request_id}",
     }
     append_github_outputs(outputs)
@@ -1900,6 +1992,104 @@ def verify_preflight_manifest(
         fail("Preflight manifest nested executable digests do not match the revalidated bundle.")
 
 
+def embed_provisioning_profile(
+    app_path: Path,
+    profile: dict[str, Any],
+    team_id: str,
+    expected_entitlements: dict[str, Any],
+    work: Path,
+) -> dict[str, Any] | None:
+    """Place the app's provisioning profile in the bundle, after checking it fits.
+
+    Everything here is checked before the profile is written, because a profile
+    that does not match is worse than none: the app is signed, notarized and
+    published, and still refuses to launch.
+    """
+    declared = profile.get("provisioning_profile")
+    if declared is None:
+        return None
+
+    secret_name = declared["secret"]
+    encoded = os.environ.get("MACOS_PROVISIONING_PROFILE")
+    if not encoded:
+        fail(
+            f"Signing environment is missing the provisioning profile from secret {secret_name}."
+        )
+    try:
+        payload = base64.b64decode(encoded, validate=True)
+    except ValueError as error:
+        fail(f"Secret {secret_name} is not valid base64: {error}")
+
+    source = work / "embedded.provisionprofile"
+    source.write_bytes(payload)
+    source.chmod(0o600)
+    # A profile is a CMS envelope; the plist inside it is what macOS reads. It is
+    # decoded to a file rather than to stdout because a binary plist would not
+    # survive being captured as text.
+    decoded_path = work / "provisionprofile.plist"
+    run(
+        ["security", "cms", "-D", "-i", str(source), "-o", str(decoded_path)],
+        display=False,
+    )
+    try:
+        with decoded_path.open("rb") as handle:
+            contents = plistlib.load(handle)
+    except (plistlib.InvalidFileException, ValueError) as error:
+        fail(f"Secret {secret_name} does not contain a provisioning profile: {error}")
+    if not isinstance(contents, dict):
+        fail(f"Secret {secret_name} does not contain a provisioning profile.")
+
+    if team_id not in contents.get("TeamIdentifier", []):
+        fail(f"Provisioning profile belongs to another team than {team_id}.")
+    expiration = contents.get("ExpirationDate")
+    if not isinstance(expiration, datetime.datetime):
+        fail("Provisioning profile has no expiration date.")
+    # plistlib returns naive UTC for plist dates.
+    if expiration.replace(tzinfo=datetime.timezone.utc) <= datetime.datetime.now(
+        datetime.timezone.utc
+    ):
+        fail(f"Provisioning profile expired on {expiration.date().isoformat()}.")
+    # A development profile lists the Macs it was issued for and works nowhere
+    # else. Distributing one produces a release that launches on the maintainer's
+    # machine and on no other, which is indistinguishable from a working release
+    # until somebody else downloads it.
+    if not contents.get("ProvisionsAllDevices"):
+        fail(
+            "Provisioning profile is limited to registered devices; Developer ID "
+            "distribution needs a profile that provisions all devices."
+        )
+
+    granted = contents.get("Entitlements")
+    if not isinstance(granted, dict):
+        fail("Provisioning profile grants no entitlements.")
+    ungranted = [
+        entitlement
+        for entitlement in restricted_entitlements(expected_entitlements)
+        if not granted.get(entitlement)
+    ]
+    if ungranted:
+        fail(f"Provisioning profile does not grant: {', '.join(ungranted)}.")
+    application_identifier = granted.get("com.apple.application-identifier")
+    expected_identifier = f"{team_id}.{profile['bundle_identifier']}"
+    if application_identifier not in (None, expected_identifier):
+        fail(
+            f"Provisioning profile is for {application_identifier}, not {expected_identifier}."
+        )
+
+    destination = app_path / PROVISIONING_PROFILE_PATH
+    if destination.exists() or destination.is_symlink():
+        fail("Application bundle already contains a provisioning profile.")
+    shutil.copyfile(source, destination)
+    destination.chmod(0o644)
+    return {
+        "name": contents.get("Name"),
+        "uuid": contents.get("UUID"),
+        "expires": expiration.date().isoformat(),
+        "sha256": sha256_file(destination),
+        "secret": secret_name,
+    }
+
+
 def command_sign(args: argparse.Namespace) -> None:
     require_tools(
         [
@@ -2009,6 +2199,10 @@ def command_sign(args: argparse.Namespace) -> None:
             entitlement_path = safe_profile_path(profile["entitlements"])
             with entitlement_path.open("rb") as handle:
                 expected_entitlements = plistlib.load(handle)
+            # Written before anything is signed so the app signature seals it.
+            provisioning = embed_provisioning_profile(
+                app_path, profile, team_id, expected_entitlements, temporary_path
+            )
             specs = nested_executables(profile)
             for spec in specs:
                 run(
@@ -2067,6 +2261,14 @@ def command_sign(args: argparse.Namespace) -> None:
             for spec in specs:
                 verify_signed_nested(app_path, profile, spec, team_id)
             run(["spctl", "--assess", "--type", "execute", "--verbose=4", str(app_path)])
+            if provisioning is not None:
+                # Stapling rewrites the bundle, so confirm the profile is still
+                # the one that was checked. Without it the app cannot launch.
+                embedded = app_path / PROVISIONING_PROFILE_PATH
+                if embedded.is_symlink() or not embedded.is_file():
+                    fail("Signed application lost its provisioning profile.")
+                if sha256_file(embedded) != provisioning["sha256"]:
+                    fail("Signed application carries a different provisioning profile.")
 
             reference_executable = app_path / "Contents" / "MacOS" / profile["executable"]
             artifacts: list[dict[str, Any]] = []
@@ -2123,6 +2325,7 @@ def command_sign(args: argparse.Namespace) -> None:
                 "signed_application": {
                     "bundle_identifier": profile["bundle_identifier"],
                     "team_id": team_id,
+                    "provisioning_profile": provisioning,
                     "main_executable_sha256": sha256_file(reference_executable),
                     "nested_executables": [
                         {

@@ -2,7 +2,16 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<!-- The app installs and activates its own camera system extension. -->
+	<!-- Both identifiers must match the embedded provisioning profile: macOS
+	     pairs the signature with the profile before it honours the restricted
+	     system-extension entitlement below. -->
+	<key>com.apple.application-identifier</key>
+	<string>G69Z5BNY97.com.trsdn.openlens</string>
+	<key>com.apple.developer.team-identifier</key>
+	<string>G69Z5BNY97</string>
+	<!-- The app installs and activates its own camera system extension. This is
+	     a restricted entitlement, so the bundle has to embed a provisioning
+	     profile that grants it or the app will not launch at all. -->
 	<key>com.apple.developer.system-extension.install</key>
 	<true/>
 	<key>com.apple.security.app-sandbox</key>

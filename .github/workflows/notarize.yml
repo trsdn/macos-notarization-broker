@@ -60,6 +60,7 @@ jobs:
       version: ${{ steps.resolve.outputs.version }}
       request_id: ${{ steps.resolve.outputs.request_id }}
       profile_digest: ${{ steps.resolve.outputs.profile_digest }}
+      provisioning_profile_secret: ${{ steps.resolve.outputs.provisioning_profile_secret }}
       artifact_name: ${{ steps.resolve.outputs.artifact_name }}
     steps:
       - name: Authorize upstream manual dispatch
@@ -281,6 +282,9 @@ jobs:
           EXPECTED_TREE_SHA: ${{ needs.preflight.outputs.tree_sha256 }}
           MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
           MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+          # Indexed by name so each profile names its own provisioning profile
+          # secret; an app that needs none resolves to the empty string.
+          MACOS_PROVISIONING_PROFILE: ${{ secrets[needs.resolve.outputs.provisioning_profile_secret] }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}

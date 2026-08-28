@@ -1447,5 +1447,218 @@ class HandoffRetentionTests(unittest.TestCase):
             )
 
 
+class ProvisioningPolicyTests(unittest.TestCase):
+    """A restricted entitlement without a provisioning profile is unshippable.
+
+    macOS refuses to launch a binary that claims a restricted entitlement unless
+    the bundle embeds a profile granting it, but nothing in the signing pipeline
+    notices: codesign, notarization, stapling and Gatekeeper all pass. OpenLens
+    v0.1.0 and v0.1.1 were published that way and could not be started on any
+    Mac. These tests keep that class of release from being produced again.
+    """
+
+    UNRESTRICTED = {"com.apple.security.app-sandbox": True}
+    RESTRICTED = {"com.apple.developer.system-extension.install": True}
+
+    def base_profile(self, **overrides: object) -> dict:
+        profile: dict = {
+            "bundle_identifier": "com.example.Demo",
+            "team_id": "ABCDE12345",
+            "provisioning_profile": {"secret": "DEMO_PROVISIONING_PROFILE"},
+        }
+        profile.update(overrides)
+        return profile
+
+    def assert_rejected(self, profile: dict, entitlements: dict) -> None:
+        with self.assertRaises(broker.BrokerError):
+            broker.validate_provisioning_policy("demo", profile, entitlements)
+
+    def test_an_app_without_restricted_entitlements_needs_no_profile(self) -> None:
+        broker.validate_provisioning_policy("demo", {}, self.UNRESTRICTED)
+
+    def test_a_restricted_entitlement_requires_a_provisioning_profile(self) -> None:
+        self.assert_rejected({}, self.RESTRICTED)
+
+    def test_a_declared_profile_satisfies_the_requirement(self) -> None:
+        broker.validate_provisioning_policy("demo", self.base_profile(), self.RESTRICTED)
+
+    def test_every_restricted_entitlement_is_covered(self) -> None:
+        for entitlement in sorted(broker.RESTRICTED_ENTITLEMENTS):
+            with self.subTest(entitlement=entitlement):
+                self.assert_rejected({}, {entitlement: True})
+
+    def test_a_profile_without_a_team_is_rejected(self) -> None:
+        profile = self.base_profile()
+        del profile["team_id"]
+        self.assert_rejected(profile, self.RESTRICTED)
+
+    def test_an_invalid_secret_name_is_rejected(self) -> None:
+        for secret in ("", "lowercase", "1LEADING_DIGIT", "AB", "X" * 101, "HAS-DASH"):
+            with self.subTest(secret=secret):
+                profile = self.base_profile(provisioning_profile={"secret": secret})
+                self.assert_rejected(profile, self.RESTRICTED)
+
+    def test_a_malformed_profile_declaration_is_rejected(self) -> None:
+        for declaration in ({}, {"secret": "OK_SECRET", "path": "elsewhere"}, "OK_SECRET", []):
+            with self.subTest(declaration=declaration):
+                profile = self.base_profile(provisioning_profile=declaration)
+                self.assert_rejected(profile, self.RESTRICTED)
+
+    def test_a_nested_executable_cannot_claim_a_restricted_entitlement(self) -> None:
+        # The broker embeds a profile into the application bundle only, so a
+        # nested binary that needs one must be refused rather than shipped dead.
+        with tempfile.TemporaryDirectory() as temporary:
+            entitlements = Path(temporary) / "nested.plist"
+            with entitlements.open("wb") as handle:
+                plistlib.dump(self.RESTRICTED, handle)
+            profile = self.base_profile(
+                nested_executables=[
+                    {"identifier": "com.example.Demo.Helper", "entitlements": "nested.plist"}
+                ]
+            )
+            with mock.patch.object(broker, "safe_profile_path", return_value=entitlements):
+                self.assert_rejected(profile, self.UNRESTRICTED)
+
+
+class ShippedProvisioningTests(unittest.TestCase):
+    """The rule above, applied to the profiles this broker actually signs."""
+
+    def test_no_shipped_profile_claims_an_unprovisioned_entitlement(self) -> None:
+        for name, profile in broker.load_profiles().items():
+            with self.subTest(profile=name):
+                with broker.safe_profile_path(profile["entitlements"]).open("rb") as handle:
+                    entitlements = plistlib.load(handle)
+                restricted = broker.restricted_entitlements(entitlements)
+                if restricted:
+                    self.assertIn(
+                        "provisioning_profile",
+                        profile,
+                        f"{name} would be signed into an app macOS cannot launch",
+                    )
+
+    def test_openlens_carries_the_profile_its_camera_extension_needs(self) -> None:
+        profile = broker.load_profiles()["openlens"]
+        self.assertEqual(
+            profile["provisioning_profile"], {"secret": "OPENLENS_PROVISIONING_PROFILE"}
+        )
+        with broker.safe_profile_path(profile["entitlements"]).open("rb") as handle:
+            entitlements = plistlib.load(handle)
+        self.assertIn("com.apple.developer.system-extension.install", entitlements)
+        # The signature has to name the same app and team as the profile, or
+        # macOS will not pair the two and the entitlement stays unhonoured.
+        self.assertEqual(
+            entitlements.get("com.apple.application-identifier"),
+            f"{profile['team_id']}.{profile['bundle_identifier']}",
+        )
+        self.assertEqual(entitlements.get("com.apple.developer.team-identifier"), profile["team_id"])
+
+
+class ProvisioningEmbedTests(unittest.TestCase):
+    """What the sign job accepts as a provisioning profile."""
+
+    TEAM = "ABCDE12345"
+    ENTITLEMENTS = {"com.apple.developer.system-extension.install": True}
+
+    def profile_contents(self, **overrides: object) -> dict:
+        contents: dict = {
+            "Name": "Developer ID Profile: com.example.Demo",
+            "UUID": "11111111-2222-3333-4444-555555555555",
+            "TeamIdentifier": [self.TEAM],
+            "ProvisionsAllDevices": True,
+            "ExpirationDate": broker.datetime.datetime.now() + broker.datetime.timedelta(days=30),
+            "Entitlements": {
+                "com.apple.developer.system-extension.install": True,
+                "com.apple.application-identifier": f"{self.TEAM}.com.example.Demo",
+            },
+        }
+        contents.update(overrides)
+        return contents
+
+    def embed(self, contents: dict | None, *, encoded: str | None = "Zm9v") -> dict:
+        """Run the embed step against a synthetic profile and return its result."""
+        app = Path(self.work) / "Demo.app"
+        (app / "Contents").mkdir(parents=True, exist_ok=True)
+        profile = {
+            "bundle_identifier": "com.example.Demo",
+            "provisioning_profile": {"secret": "DEMO_PROVISIONING_PROFILE"},
+        }
+
+        def fake_run(command: list[str], **_: object) -> None:
+            # Stand in for `security cms -D`, which needs a real CMS envelope.
+            destination = Path(command[command.index("-o") + 1])
+            with destination.open("wb") as handle:
+                plistlib.dump(contents, handle)
+
+        environment = {} if encoded is None else {"MACOS_PROVISIONING_PROFILE": encoded}
+        with mock.patch.dict(broker.os.environ, environment, clear=False):
+            if encoded is None:
+                broker.os.environ.pop("MACOS_PROVISIONING_PROFILE", None)
+            with mock.patch.object(broker, "run", side_effect=fake_run):
+                return broker.embed_provisioning_profile(
+                    app, profile, self.TEAM, self.ENTITLEMENTS, Path(self.work)
+                )
+
+    def setUp(self) -> None:
+        self._temporary = tempfile.TemporaryDirectory()
+        self.work = self._temporary.name
+        self.addCleanup(self._temporary.cleanup)
+
+    def assert_rejected(self, contents: dict | None, **kwargs: object) -> None:
+        with self.assertRaises(broker.BrokerError):
+            self.embed(contents, **kwargs)
+
+    def test_a_profile_that_fits_is_embedded_where_macos_reads_it(self) -> None:
+        result = self.embed(self.profile_contents())
+        embedded = Path(self.work) / "Demo.app" / broker.PROVISIONING_PROFILE_PATH
+        self.assertTrue(embedded.is_file())
+        self.assertEqual(result["sha256"], broker.sha256_file(embedded))
+        self.assertEqual(result["secret"], "DEMO_PROVISIONING_PROFILE")
+
+    def test_an_app_without_a_declared_profile_is_untouched(self) -> None:
+        app = Path(self.work) / "Demo.app"
+        (app / "Contents").mkdir(parents=True, exist_ok=True)
+        self.assertIsNone(
+            broker.embed_provisioning_profile(
+                app, {"bundle_identifier": "x"}, self.TEAM, {}, Path(self.work)
+            )
+        )
+        self.assertFalse((app / broker.PROVISIONING_PROFILE_PATH).exists())
+
+    def test_a_missing_secret_is_reported(self) -> None:
+        self.assert_rejected(self.profile_contents(), encoded=None)
+
+    def test_a_secret_that_is_not_base64_is_reported(self) -> None:
+        self.assert_rejected(self.profile_contents(), encoded="not base64!")
+
+    def test_a_device_limited_profile_is_refused(self) -> None:
+        # This is the trap: an Xcode team profile validates locally because the
+        # developer's Mac is one of its provisioned devices, and fails everywhere
+        # else. It must never reach a release.
+        contents = self.profile_contents()
+        del contents["ProvisionsAllDevices"]
+        self.assert_rejected(contents)
+
+    def test_a_profile_from_another_team_is_refused(self) -> None:
+        self.assert_rejected(self.profile_contents(TeamIdentifier=["ZZZZZZZZZZ"]))
+
+    def test_an_expired_profile_is_refused(self) -> None:
+        expired = broker.datetime.datetime.now() - broker.datetime.timedelta(days=1)
+        self.assert_rejected(self.profile_contents(ExpirationDate=expired))
+
+    def test_a_profile_missing_the_entitlement_is_refused(self) -> None:
+        self.assert_rejected(self.profile_contents(Entitlements={"other": True}))
+
+    def test_a_profile_for_another_app_is_refused(self) -> None:
+        contents = self.profile_contents()
+        contents["Entitlements"]["com.apple.application-identifier"] = f"{self.TEAM}.com.other.App"
+        self.assert_rejected(contents)
+
+    def test_a_bundle_that_already_carries_a_profile_is_refused(self) -> None:
+        app = Path(self.work) / "Demo.app"
+        (app / "Contents").mkdir(parents=True, exist_ok=True)
+        (app / broker.PROVISIONING_PROFILE_PATH).write_bytes(b"planted")
+        self.assert_rejected(self.profile_contents())
+
+
 if __name__ == "__main__":
     unittest.main()
