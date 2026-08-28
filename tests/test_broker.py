@@ -1766,3 +1766,50 @@ class ProvisioningEmbedTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class VolumeIconStagingTests(unittest.TestCase):
+    """The disk image is a signed artifact, so the icon copied into it is checked, not trusted."""
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.app = self.root / "Demo.app"
+        self.resources = self.app / "Contents" / "Resources"
+        self.resources.mkdir(parents=True)
+        self.staging = self.root / "staging"
+        self.staging.mkdir()
+
+    def test_icns_is_staged_as_the_volume_icon(self) -> None:
+        (self.resources / "AppIcon.icns").write_bytes(b"icns" + b"\x00" * 32)
+
+        self.assertTrue(broker.stage_volume_icon(self.app, self.staging))
+        staged = self.staging / ".VolumeIcon.icns"
+        self.assertTrue(staged.is_file())
+        self.assertEqual(staged.read_bytes()[:4], b"icns")
+
+    def test_a_bundle_without_an_icon_is_not_an_error(self) -> None:
+        self.assertFalse(broker.stage_volume_icon(self.app, self.staging))
+        self.assertFalse((self.staging / ".VolumeIcon.icns").exists())
+
+    def test_macho_named_as_an_icon_is_rejected(self) -> None:
+        (self.resources / "AppIcon.icns").write_bytes(BundleFixtureMixin.ARM64_MACHO)
+
+        with self.assertRaises(broker.BrokerError):
+            broker.stage_volume_icon(self.app, self.staging)
+        self.assertFalse((self.staging / ".VolumeIcon.icns").exists())
+
+    def test_a_file_that_is_not_an_icns_is_rejected(self) -> None:
+        (self.resources / "AppIcon.icns").write_bytes(b"MZ" + b"\x00" * 32)
+
+        with self.assertRaises(broker.BrokerError):
+            broker.stage_volume_icon(self.app, self.staging)
+
+    def test_a_symlinked_icon_is_rejected(self) -> None:
+        target = self.root / "outside.icns"
+        target.write_bytes(b"icns" + b"\x00" * 32)
+        (self.resources / "AppIcon.icns").symlink_to(target)
+
+        with self.assertRaises(broker.BrokerError):
+            broker.stage_volume_icon(self.app, self.staging)

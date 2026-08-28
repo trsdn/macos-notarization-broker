@@ -1921,6 +1921,35 @@ def create_and_verify_zip(
         run(["xcrun", "stapler", "validate", str(candidate)])
 
 
+def stage_volume_icon(app_path: Path, staging: Path) -> bool:
+    """Copy the application's icon into the disk image so Finder shows it on the volume.
+
+    The icon is read from the bundle that already passed preflight, and it is checked again here:
+    only a real `.icns` is accepted, never a Mach-O and never a symlink. The disk image is a signed
+    artifact, so nothing enters it that has not been looked at.
+
+    Returns whether an icon was staged; a bundle without one is not an error.
+    """
+    resources = app_path / "Contents" / "Resources"
+    candidates = sorted(resources.glob("*.icns")) if resources.is_dir() else []
+    if not candidates:
+        print("No application icon found; the disk image keeps the default volume icon.")
+        return False
+
+    icon = candidates[0]
+    if icon.is_symlink() or not icon.is_file():
+        fail(f"Application icon is not a regular file: {icon.name}")
+    if is_macho(icon):
+        fail(f"Application icon is Mach-O code, not an icon: {icon.name}")
+    with icon.open("rb") as handle:
+        if handle.read(4) != b"icns":
+            fail(f"Application icon is not an icns file: {icon.name}")
+
+    shutil.copy2(icon, staging / ".VolumeIcon.icns")
+    print(f"Disk image volume icon: {icon.name}")
+    return True
+
+
 def create_and_verify_dmg(
     app_path: Path,
     output: Path,
@@ -1936,6 +1965,12 @@ def create_and_verify_dmg(
         staging.mkdir()
         run(["ditto", str(app_path), str(staging / profile["bundle_name"])])
         os.symlink("/Applications", staging / "Applications")
+        volume_icon = stage_volume_icon(app_path, staging)
+
+        # A volume icon can only be marked on a mounted, writable image, so the disk image is
+        # built read-write, marked, and then converted to the compressed image that ships. The
+        # custom-icon attribute survives that conversion.
+        writable = temporary_path / "writable.dmg"
         run(
             [
                 "hdiutil",
@@ -1946,10 +1981,18 @@ def create_and_verify_dmg(
                 str(staging),
                 "-ov",
                 "-format",
-                "UDZO",
-                str(output),
+                "UDRW" if volume_icon else "UDZO",
+                str(writable if volume_icon else output),
             ]
         )
+        if volume_icon:
+            mount_point = Path("/Volumes") / profile["dmg_volume_name"]
+            run(["hdiutil", "attach", str(writable), "-nobrowse", "-noverify"])
+            try:
+                run(["xcrun", "SetFile", "-a", "C", str(mount_point)])
+            finally:
+                run(["hdiutil", "detach", str(mount_point), "-quiet"], check=False)
+            run(["hdiutil", "convert", str(writable), "-format", "UDZO", "-o", str(output), "-ov"])
         run(["codesign", "--force", "--sign", identity, "--timestamp", str(output)])
         run(["codesign", "--verify", "--strict", "--verbose=2", str(output)])
         run(["hdiutil", "verify", str(output)])
