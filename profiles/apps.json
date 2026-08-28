@@ -238,7 +238,7 @@
       "minimum_system_version": "14.0",
       "entitlements": "entitlements/openlens.plist",
       "provisioning_profile": {
-        "secret": "OPENLENS_PROVISIONING_PROFILE"
+        "profile_type": "MAC_APP_DIRECT"
       },
       "nested_executables": [
         {
