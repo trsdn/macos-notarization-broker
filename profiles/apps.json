@@ -349,7 +349,8 @@
       "executable": "PrintFileManager",
       "package_type": "APPL",
       "architectures": [
-        "arm64"
+        "arm64",
+        "x86_64"
       ],
       "minimum_system_version": "15.0",
       "entitlements": "entitlements/printfilemanager.plist",
@@ -365,11 +366,11 @@
       "artifacts": [
         {
           "type": "zip",
-          "name": "PrintFileManager-v{version}-macOS-arm64.zip"
+          "name": "PrintFileManager-v{version}-macOS-universal.zip"
         },
         {
           "type": "dmg",
-          "name": "PrintFileManager-v{version}-macOS-arm64.dmg"
+          "name": "PrintFileManager-v{version}-macOS-universal.dmg"
         }
       ]
     },
@@ -384,7 +385,8 @@
       "executable": "ThreeMFQuickLook",
       "package_type": "APPL",
       "architectures": [
-        "arm64"
+        "arm64",
+        "x86_64"
       ],
       "minimum_system_version": "15.0",
       "entitlements": "entitlements/threemfquicklook.plist",
@@ -425,11 +427,11 @@
       "artifacts": [
         {
           "type": "zip",
-          "name": "ThreeMFQuickLook-v{version}-macOS-arm64.zip"
+          "name": "ThreeMFQuickLook-v{version}-macOS-universal.zip"
         },
         {
           "type": "dmg",
-          "name": "ThreeMFQuickLook-v{version}-macOS-arm64.dmg"
+          "name": "ThreeMFQuickLook-v{version}-macOS-universal.dmg"
         }
       ]
     }
