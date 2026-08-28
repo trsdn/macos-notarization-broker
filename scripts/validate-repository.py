@@ -15,6 +15,18 @@ PINNED_ACTION = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}")
 PERMISSION_VALUE = re.compile(
     r"^\s+[a-z-]+:\s*(read|write|none|read-all|write-all)\s*$", re.MULTILINE
 )
+# The complete set of secrets the workflow is allowed to read, named rather than
+# counted so that adding one is a deliberate edit here and not an off-by-one.
+WORKFLOW_SECRETS = {
+    "APPLE_APP_PASSWORD",
+    "APPLE_ID",
+    "APPLE_TEAM_ID",
+    "ASC_ISSUER_ID",
+    "ASC_KEY_ID",
+    "ASC_PRIVATE_KEY",
+    "MACOS_CERTIFICATE",
+    "MACOS_CERTIFICATE_PWD",
+}
 
 
 def require(condition: bool, message: str) -> None:
@@ -130,7 +142,11 @@ def validate_notarize_workflow() -> None:
 
     first_secret = workflow.index("secrets.")
     require(first_secret > workflow.index("\n  sign:\n"), "Apple secrets are referenced before sign job")
-    require(workflow.count("secrets.") == 5, "unexpected workflow secret reference count")
+    referenced = sorted(set(re.findall(r"secrets\.([A-Z0-9_]+)", workflow)))
+    require(
+        referenced == sorted(WORKFLOW_SECRETS),
+        f"unexpected workflow secret references: {', '.join(referenced)}",
+    )
     require_no_expression_interpolation(workflow, "notarize.yml")
 
     authorization_markers = (
