@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import base64
+import datetime
+import hashlib
 import importlib.util
 import inspect
 import json
@@ -1523,7 +1526,7 @@ class ProvisioningPolicyTests(unittest.TestCase):
         profile: dict = {
             "bundle_identifier": "com.example.Demo",
             "team_id": "ABCDE12345",
-            "provisioning_profile": {"secret": "DEMO_PROVISIONING_PROFILE"},
+            "provisioning_profile": {"profile_type": "MAC_APP_DIRECT"},
         }
         profile.update(overrides)
         return profile
@@ -1551,14 +1554,22 @@ class ProvisioningPolicyTests(unittest.TestCase):
         del profile["team_id"]
         self.assert_rejected(profile, self.RESTRICTED)
 
-    def test_an_invalid_secret_name_is_rejected(self) -> None:
-        for secret in ("", "lowercase", "1LEADING_DIGIT", "AB", "X" * 101, "HAS-DASH"):
-            with self.subTest(secret=secret):
-                profile = self.base_profile(provisioning_profile={"secret": secret})
+    def test_an_unknown_profile_type_is_rejected(self) -> None:
+        # Only Developer ID distribution is in scope. An App Store profile would
+        # be issued happily by Apple and then refuse to pair with the signature.
+        for profile_type in ("", "MAC_APP_STORE", "MAC_APP_DEVELOPMENT", "mac_app_direct"):
+            with self.subTest(profile_type=profile_type):
+                profile = self.base_profile(provisioning_profile={"profile_type": profile_type})
                 self.assert_rejected(profile, self.RESTRICTED)
 
     def test_a_malformed_profile_declaration_is_rejected(self) -> None:
-        for declaration in ({}, {"secret": "OK_SECRET", "path": "elsewhere"}, "OK_SECRET", []):
+        declarations = (
+            {},
+            {"profile_type": "MAC_APP_DIRECT", "secret": "LEFTOVER"},
+            "MAC_APP_DIRECT",
+            [],
+        )
+        for declaration in declarations:
             with self.subTest(declaration=declaration):
                 profile = self.base_profile(provisioning_profile=declaration)
                 self.assert_rejected(profile, self.RESTRICTED)
@@ -1597,9 +1608,7 @@ class ShippedProvisioningTests(unittest.TestCase):
 
     def test_openlens_carries_the_profile_its_camera_extension_needs(self) -> None:
         profile = broker.load_profiles()["openlens"]
-        self.assertEqual(
-            profile["provisioning_profile"], {"secret": "OPENLENS_PROVISIONING_PROFILE"}
-        )
+        self.assertEqual(profile["provisioning_profile"], {"profile_type": "MAC_APP_DIRECT"})
         with broker.safe_profile_path(profile["entitlements"]).open("rb") as handle:
             entitlements = plistlib.load(handle)
         self.assertIn("com.apple.developer.system-extension.install", entitlements)
@@ -1612,11 +1621,194 @@ class ShippedProvisioningTests(unittest.TestCase):
         self.assertEqual(entitlements.get("com.apple.developer.team-identifier"), profile["team_id"])
 
 
+class DerSignatureTests(unittest.TestCase):
+    """A JWT carries r||s; openssl only produces DER, so the two are bridged."""
+
+    def encode(self, r: bytes, s: bytes) -> bytes:
+        body = b"".join(bytes([0x02, len(part)]) + part for part in (r, s))
+        return bytes([0x30, len(body)]) + body
+
+    def test_both_integers_are_padded_to_the_curve_width(self) -> None:
+        # A short integer is what makes a naive concatenation produce a
+        # signature Apple rejects roughly one request in every few hundred.
+        raw = broker.der_signature_to_jose(self.encode(b"\x01", b"\x02\x03"))
+        self.assertEqual(len(raw), 64)
+        self.assertEqual(raw[:32], b"\x00" * 31 + b"\x01")
+        self.assertEqual(raw[32:], b"\x00" * 30 + b"\x02\x03")
+
+    def test_a_full_width_signature_round_trips(self) -> None:
+        r = bytes(range(1, 33))
+        s = bytes(range(33, 65))
+        # openssl prefixes a zero byte when the high bit would read as negative.
+        self.assertEqual(broker.der_signature_to_jose(self.encode(r, s)), r + s)
+
+    def test_malformed_signatures_are_refused(self) -> None:
+        body = self.encode(b"\x01", b"\x02")
+        for payload in (b"", b"\x30\x02\x02\x01\x01", body[:-1], body + b"\x00", b"\x31" + body[1:]):
+            with self.subTest(payload=payload):
+                with self.assertRaises(broker.BrokerError):
+                    broker.der_signature_to_jose(payload)
+
+
+class AppStoreConnectTokenTests(unittest.TestCase):
+    """The bearer token is assembled here rather than by a crypto dependency."""
+
+    def setUp(self) -> None:
+        self._temporary = tempfile.TemporaryDirectory()
+        self.work = Path(self._temporary.name)
+        self.addCleanup(self._temporary.cleanup)
+        self.key = self.work / "key.pem"
+        subprocess.run(
+            ["openssl", "ecparam", "-genkey", "-name", "prime256v1", "-noout", "-out", str(self.key)],
+            check=True,
+            capture_output=True,
+        )
+
+    def decode(self, segment: str) -> dict:
+        padding = "=" * (-len(segment) % 4)
+        return json.loads(base64.urlsafe_b64decode(segment + padding))
+
+    def test_the_token_says_what_apple_expects(self) -> None:
+        token = broker.app_store_connect_token("KEY123", "ISSUER-1", self.key, self.work)
+        header, claims, signature = token.split(".")
+        self.assertEqual(
+            self.decode(header), {"alg": "ES256", "kid": "KEY123", "typ": "JWT"}
+        )
+        payload = self.decode(claims)
+        self.assertEqual(payload["iss"], "ISSUER-1")
+        self.assertEqual(payload["aud"], "appstoreconnect-v1")
+        self.assertEqual(payload["exp"] - payload["iat"], broker.ASC_TOKEN_LIFETIME)
+        padding = "=" * (-len(signature) % 4)
+        self.assertEqual(len(base64.urlsafe_b64decode(signature + padding)), 64)
+
+    def test_no_key_material_is_left_behind(self) -> None:
+        broker.app_store_connect_token("KEY123", "ISSUER-1", self.key, self.work)
+        self.assertEqual(
+            sorted(entry.name for entry in self.work.iterdir()), ["key.pem"]
+        )
+
+
+class ProvisioningIssueTests(unittest.TestCase):
+    """When the broker reuses Apple's profile and when it replaces it."""
+
+    PROFILE = {
+        "bundle_identifier": "com.example.Demo",
+        "provisioning_profile": {"profile_type": "MAC_APP_DIRECT"},
+    }
+    ENTITLEMENTS = {"com.apple.developer.system-extension.install": True}
+    CREDENTIALS = {
+        "ASC_KEY_ID": "KEY123",
+        "ASC_ISSUER_ID": "ISSUER-1",
+        "ASC_PRIVATE_KEY": base64.b64encode(b"-----BEGIN PRIVATE KEY-----").decode(),
+    }
+
+    def setUp(self) -> None:
+        self._temporary = tempfile.TemporaryDirectory()
+        self.work = Path(self._temporary.name)
+        self.addCleanup(self._temporary.cleanup)
+        self.calls: list[tuple[str, str]] = []
+
+    def stamp(self, days: int) -> str:
+        moment = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=days)
+        return moment.strftime("%Y-%m-%dT%H:%M:%S.000+0000")
+
+    def issue(self, profiles: list[dict], **environment: str) -> bytes:
+        def responder(token: str, method: str, path: str, payload=None, query=None) -> dict:
+            self.calls.append((method, path))
+            if path == "/bundleIds":
+                return {"data": [{"id": "BID", "attributes": {"identifier": "com.example.Demo"}}]}
+            if path.endswith("/bundleIdCapabilities"):
+                return {"data": [{"attributes": {"capabilityType": "SYSTEM_EXTENSION"}}]}
+            if path == "/certificates":
+                return {"data": [{"id": "CERT", "attributes": {"expirationDate": self.stamp(365)}}]}
+            if path == "/profiles" and method == "GET":
+                return {"data": profiles}
+            if path == "/profiles" and method == "POST":
+                return {
+                    "data": {
+                        "attributes": {"profileContent": base64.b64encode(b"fresh").decode()}
+                    }
+                }
+            return {}
+
+        values = dict(self.CREDENTIALS)
+        values.update(environment)
+        with mock.patch.dict(broker.os.environ, values, clear=False):
+            for name, value in values.items():
+                if value == "":
+                    broker.os.environ.pop(name, None)
+            with mock.patch.object(broker, "app_store_connect_token", return_value="token"):
+                with mock.patch.object(broker, "app_store_connect_request", side_effect=responder):
+                    return broker.issue_provisioning_profile(
+                        "demo", self.PROFILE, self.ENTITLEMENTS, self.work
+                    )
+
+    def existing(self, **overrides: object) -> dict:
+        attributes: dict = {
+            "name": "Broker demo Developer ID",
+            "profileType": "MAC_APP_DIRECT",
+            "profileState": "ACTIVE",
+            "expirationDate": self.stamp(365),
+            "profileContent": base64.b64encode(b"reused").decode(),
+        }
+        attributes.update(overrides)
+        return {"id": "PID", "attributes": attributes}
+
+    def test_a_healthy_profile_is_reused(self) -> None:
+        self.assertEqual(self.issue([self.existing()]), b"reused")
+        self.assertNotIn(("POST", "/profiles"), self.calls)
+        self.assertNotIn(("DELETE", "/profiles/PID"), self.calls)
+
+    def test_a_profile_is_issued_when_the_team_has_none(self) -> None:
+        self.assertEqual(self.issue([]), b"fresh")
+        self.assertIn(("POST", "/profiles"), self.calls)
+
+    def test_a_profile_close_to_expiry_is_replaced_before_it_bites(self) -> None:
+        # Renewing here means an expiring profile costs one release its old
+        # profile, instead of costing a later release its ability to launch.
+        self.assertEqual(self.issue([self.existing(expirationDate=self.stamp(5))]), b"fresh")
+        self.assertIn(("DELETE", "/profiles/PID"), self.calls)
+
+    def test_an_unusable_profile_is_replaced(self) -> None:
+        cases = {
+            "invalid": {"profileState": "INVALID"},
+            "wrong type": {"profileType": "MAC_APP_STORE"},
+            "no content": {"profileContent": ""},
+            "undated": {"expirationDate": "not a date"},
+        }
+        for label, override in cases.items():
+            with self.subTest(case=label):
+                self.calls = []
+                self.assertEqual(self.issue([self.existing(**override)]), b"fresh")
+                self.assertIn(("DELETE", "/profiles/PID"), self.calls)
+
+    def test_another_apps_profile_is_left_alone(self) -> None:
+        self.calls = []
+        self.assertEqual(self.issue([self.existing(name="Broker other Developer ID")]), b"fresh")
+        self.assertNotIn(("DELETE", "/profiles/PID"), self.calls)
+
+    def test_missing_credentials_are_named(self) -> None:
+        for name in ("ASC_KEY_ID", "ASC_ISSUER_ID", "ASC_PRIVATE_KEY"):
+            with self.subTest(credential=name):
+                with self.assertRaises(broker.BrokerError) as raised:
+                    self.issue([], **{name: ""})
+                self.assertIn(name, str(raised.exception))
+
+    def test_the_private_key_does_not_outlive_the_request(self) -> None:
+        self.issue([self.existing()])
+        self.assertEqual(list(self.work.iterdir()), [])
+
+
 class ProvisioningEmbedTests(unittest.TestCase):
-    """What the sign job accepts as a provisioning profile."""
+    """What the sign job accepts as a provisioning profile.
+
+    These checks are kept independent of how the profile was obtained: a bug in
+    the issuing code must not be able to put an unlaunchable bundle in a release.
+    """
 
     TEAM = "ABCDE12345"
     ENTITLEMENTS = {"com.apple.developer.system-extension.install": True}
+    CERTIFICATE = b"signing-certificate-der"
 
     def profile_contents(self, **overrides: object) -> dict:
         contents: dict = {
@@ -1625,6 +1817,7 @@ class ProvisioningEmbedTests(unittest.TestCase):
             "TeamIdentifier": [self.TEAM],
             "ProvisionsAllDevices": True,
             "ExpirationDate": broker.datetime.datetime.now() + broker.datetime.timedelta(days=30),
+            "DeveloperCertificates": [self.CERTIFICATE],
             "Entitlements": {
                 "com.apple.developer.system-extension.install": True,
                 "com.apple.application-identifier": f"{self.TEAM}.com.example.Demo",
@@ -1633,13 +1826,13 @@ class ProvisioningEmbedTests(unittest.TestCase):
         contents.update(overrides)
         return contents
 
-    def embed(self, contents: dict | None, *, encoded: str | None = "Zm9v") -> dict:
+    def embed(self, contents: object, *, issued: bytes = b"envelope") -> dict:
         """Run the embed step against a synthetic profile and return its result."""
         app = Path(self.work) / "Demo.app"
         (app / "Contents").mkdir(parents=True, exist_ok=True)
         profile = {
             "bundle_identifier": "com.example.Demo",
-            "provisioning_profile": {"secret": "DEMO_PROVISIONING_PROFILE"},
+            "provisioning_profile": {"profile_type": "MAC_APP_DIRECT"},
         }
 
         def fake_run(command: list[str], **_: object) -> None:
@@ -1648,21 +1841,26 @@ class ProvisioningEmbedTests(unittest.TestCase):
             with destination.open("wb") as handle:
                 plistlib.dump(contents, handle)
 
-        environment = {} if encoded is None else {"MACOS_PROVISIONING_PROFILE": encoded}
-        with mock.patch.dict(broker.os.environ, environment, clear=False):
-            if encoded is None:
-                broker.os.environ.pop("MACOS_PROVISIONING_PROFILE", None)
-            with mock.patch.object(broker, "run", side_effect=fake_run):
-                return broker.embed_provisioning_profile(
-                    app, profile, self.TEAM, self.ENTITLEMENTS, Path(self.work)
-                )
+        fingerprint = hashlib.sha1(self.CERTIFICATE).hexdigest().upper()
+        with mock.patch.object(broker, "issue_provisioning_profile", return_value=issued):
+            with mock.patch.object(broker, "signing_certificate_hashes", return_value={fingerprint}):
+                with mock.patch.object(broker, "run", side_effect=fake_run):
+                    return broker.embed_provisioning_profile(
+                        "demo",
+                        app,
+                        profile,
+                        self.TEAM,
+                        self.ENTITLEMENTS,
+                        Path(self.work) / "keychain",
+                        Path(self.work),
+                    )
 
     def setUp(self) -> None:
         self._temporary = tempfile.TemporaryDirectory()
         self.work = self._temporary.name
         self.addCleanup(self._temporary.cleanup)
 
-    def assert_rejected(self, contents: dict | None, **kwargs: object) -> None:
+    def assert_rejected(self, contents: object, **kwargs: object) -> None:
         with self.assertRaises(broker.BrokerError):
             self.embed(contents, **kwargs)
 
@@ -1671,23 +1869,29 @@ class ProvisioningEmbedTests(unittest.TestCase):
         embedded = Path(self.work) / "Demo.app" / broker.PROVISIONING_PROFILE_PATH
         self.assertTrue(embedded.is_file())
         self.assertEqual(result["sha256"], broker.sha256_file(embedded))
-        self.assertEqual(result["secret"], "DEMO_PROVISIONING_PROFILE")
+        self.assertEqual(result["profile_type"], "MAC_APP_DIRECT")
+        self.assertEqual(result["source"], "app-store-connect")
 
     def test_an_app_without_a_declared_profile_is_untouched(self) -> None:
         app = Path(self.work) / "Demo.app"
         (app / "Contents").mkdir(parents=True, exist_ok=True)
         self.assertIsNone(
             broker.embed_provisioning_profile(
-                app, {"bundle_identifier": "x"}, self.TEAM, {}, Path(self.work)
+                "demo",
+                app,
+                {"bundle_identifier": "x"},
+                self.TEAM,
+                {},
+                Path(self.work) / "keychain",
+                Path(self.work),
             )
         )
         self.assertFalse((app / broker.PROVISIONING_PROFILE_PATH).exists())
 
-    def test_a_missing_secret_is_reported(self) -> None:
-        self.assert_rejected(self.profile_contents(), encoded=None)
-
-    def test_a_secret_that_is_not_base64_is_reported(self) -> None:
-        self.assert_rejected(self.profile_contents(), encoded="not base64!")
+    def test_something_that_is_not_a_profile_is_reported(self) -> None:
+        # A readable plist that is not a profile dictionary must not be signed
+        # into the bundle as though it were one.
+        self.assert_rejected([])
 
     def test_a_device_limited_profile_is_refused(self) -> None:
         # This is the trap: an Xcode team profile validates locally because the
@@ -1711,6 +1915,12 @@ class ProvisioningEmbedTests(unittest.TestCase):
         contents = self.profile_contents()
         contents["Entitlements"]["com.apple.application-identifier"] = f"{self.TEAM}.com.other.App"
         self.assert_rejected(contents)
+
+    def test_a_profile_that_omits_the_signing_certificate_is_refused(self) -> None:
+        # Signing with a certificate the profile does not name fails at launch
+        # exactly like shipping no profile at all.
+        self.assert_rejected(self.profile_contents(DeveloperCertificates=[b"someone else"]))
+        self.assert_rejected(self.profile_contents(DeveloperCertificates=[]))
 
     def test_a_bundle_that_already_carries_a_profile_is_refused(self) -> None:
         app = Path(self.work) / "Demo.app"

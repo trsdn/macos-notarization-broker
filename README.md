@@ -52,31 +52,36 @@ a missing profile. Signing succeeds, notarization succeeds, stapling succeeds,
 Gatekeeper says "accepted", and the app then dies at launch with a bare
 `Launch failed` (`AppleMobileFileIntegrityError -413`, "No matching profile
 found"). A profile that claims such an entitlement is therefore rejected here
-unless it also declares where its provisioning profile comes from:
+unless it also declares the kind of provisioning profile it needs:
 
 ```json
-"provisioning_profile": { "secret": "YOURAPP_PROVISIONING_PROFILE" }
+"provisioning_profile": { "profile_type": "MAC_APP_DIRECT" }
 ```
 
-The profile must be a **Developer ID** one from the Apple Developer portal —
-Profiles → **+** → Distribution → Developer ID — for the app's App ID and its
-Developer ID Application certificate. An Xcode "Mac Team Provisioning Profile"
-will not do: it is issued for a fixed list of registered Macs, so it validates
-on the maintainer's machine and fails on every other. The broker refuses one.
+Nobody downloads that profile. The sign job issues it through the App Store
+Connect API for the app's bundle identifier, registering the App ID and enabling
+the matching capability if they do not exist yet, and reissues it once it comes
+within 30 days of expiry. `MAC_APP_DIRECT` is Apple's name for Developer ID
+distribution; an Xcode "Mac Team Provisioning Profile" is issued for a fixed
+list of registered Macs, so it validates on the maintainer's machine and fails
+on every other, and the broker refuses one.
 
-Store it in the same environment, base64-encoded:
+That needs an App Store Connect API key with the Developer Resources role, set
+up once for every app the broker will ever sign (App Store Connect → Users and
+Access → Integrations → App Store Connect API):
 
 ```bash
-base64 -i YourApp.provisionprofile | \
-  gh secret set YOURAPP_PROVISIONING_PROFILE --env macos-signing
+gh secret set ASC_KEY_ID     --env macos-signing   # the key's ID
+gh secret set ASC_ISSUER_ID  --env macos-signing   # the issuer ID above the key
+base64 -i AuthKey_XXXXXXXX.p8 | gh secret set ASC_PRIVATE_KEY --env macos-signing
 ```
 
 The app's entitlements must also carry `com.apple.application-identifier`
 (`TEAMID.bundle.identifier`) and `com.apple.developer.team-identifier`, because
 macOS pairs the signature with the profile through them. Before embedding
-anything, the sign job checks the profile's team, expiry, device scope, granted
-entitlements and app identifier, so a mismatch fails the run instead of
-producing a release nobody can start.
+anything, the sign job checks the issued profile's team, expiry, device scope,
+granted entitlements, app identifier and signing certificate, so a mismatch
+fails the run instead of producing a release nobody can start.
 
 ## Run
 
