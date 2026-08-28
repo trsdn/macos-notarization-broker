@@ -201,6 +201,7 @@ def load_profiles() -> dict[str, Any]:
         if "team_id" in profile and not TEAM_ID_PATTERN.fullmatch(str(profile["team_id"])):
             fail(f"Profile {name} has an invalid Apple Team ID.")
         validate_nested_executable_policy(name, profile)
+        validate_nested_resource_bundle_policy(name, profile)
         for artifact in profile["artifacts"]:
             if artifact.get("type") not in {"zip", "dmg"}:
                 fail(f"Profile {name} has an unsupported artifact type.")
@@ -230,6 +231,10 @@ def safe_profile_path(relative_path: str) -> Path:
 
 def nested_executables(profile: dict[str, Any]) -> list[dict[str, Any]]:
     return profile.get("nested_executables", [])
+
+
+def nested_resource_bundles(profile: dict[str, Any]) -> list[dict[str, Any]]:
+    return profile.get("nested_resource_bundles", [])
 
 
 def restricted_entitlements(entitlements: dict[str, Any]) -> list[str]:
@@ -306,6 +311,42 @@ def render_expected_value(template: str, profile: dict[str, Any], spec: dict[str
     except (IndexError, KeyError, ValueError) as error:
         fail(f"Embedded Info.plist expectation uses an unsupported placeholder: {error}")
     return template
+
+
+def validate_nested_resource_bundle_policy(name: str, profile: dict[str, Any]) -> None:
+    """Validate declarations of nested bundles that carry no code.
+
+    SwiftPM emits a resource bundle for any dependency shipping a privacy manifest, so an app can
+    contain a nested bundle it never asked for. Declaring one here only lifts the nested-bundle
+    check for that exact path. Everything inside it is still policed by the preflight walk: a
+    Mach-O file is rejected because it is not in `declared_code`, an executable bit is rejected the
+    same way, a symlink is rejected outright, and a further nested bundle inside it must itself be
+    declared. Declaring a resource bundle therefore cannot become a way to smuggle in code.
+    """
+    specs = profile.get("nested_resource_bundles")
+    if specs is None:
+        return
+    if not isinstance(specs, list) or not specs:
+        fail(f"Profile {name} must declare nested_resource_bundles as a non-empty list or omit it.")
+
+    seen: set[str] = set()
+    for spec in specs:
+        if not isinstance(spec, dict):
+            fail(f"Profile {name} has a nested resource bundle entry that is not an object.")
+        unknown = set(spec) - {"path"}
+        if unknown:
+            fail(
+                f"Profile {name} nested resource bundle has unsupported fields: "
+                f"{', '.join(sorted(unknown))}"
+            )
+        path = spec.get("path")
+        if not isinstance(path, str) or not BUNDLE_RELATIVE_PATH_PATTERN.fullmatch(path):
+            fail(f"Profile {name} has an unsafe nested resource bundle path: {path!r}")
+        if not path.casefold().endswith(NESTED_BUNDLE_SUFFIXES):
+            fail(f"Profile {name} declares a resource bundle that is not a bundle: {path}")
+        if path in seen:
+            fail(f"Profile {name} declares a duplicate resource bundle path: {path}")
+        seen.add(path)
 
 
 def validate_nested_executable_policy(name: str, profile: dict[str, Any]) -> None:
@@ -1510,6 +1551,12 @@ def validate_app_tree(
     # below because only its declared executable appears in `declared_code`.
     declared_bundles = {
         app_path / spec["plugin_bundle"]["path"] for spec in specs if "plugin_bundle" in spec
+    }
+    # Resource bundles carry no code. Adding them here lifts only the nested-bundle check; they
+    # are deliberately not added to `declared_code`, so any Mach-O or executable file inside one
+    # is still rejected by the checks below.
+    declared_bundles |= {
+        app_path / spec["path"] for spec in nested_resource_bundles(profile)
     }
     for path in app_path.rglob("*"):
         relative = path.relative_to(app_path)

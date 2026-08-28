@@ -353,6 +353,11 @@
       ],
       "minimum_system_version": "15.0",
       "entitlements": "entitlements/printfilemanager.plist",
+      "nested_resource_bundles": [
+        {
+          "path": "Contents/Resources/ZIPFoundation_ZIPFoundation.bundle"
+        }
+      ],
       "dmg_volume_name": "Print File Manager",
       "max_archive_bytes": 134217728,
       "max_uncompressed_bytes": 268435456,
@@ -383,6 +388,11 @@
       ],
       "minimum_system_version": "15.0",
       "entitlements": "entitlements/threemfquicklook.plist",
+      "nested_resource_bundles": [
+        {
+          "path": "Contents/Resources/ZIPFoundation_ZIPFoundation.bundle"
+        }
+      ],
       "nested_executables": [
         {
           "path": "Contents/PlugIns/ThreeMFPreviewExtension.appex/Contents/MacOS/ThreeMFPreviewExtension",
