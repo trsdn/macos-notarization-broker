@@ -375,8 +375,8 @@
       ]
     },
     "threemfquicklook": {
-      "repository": "trsdn/printfilemanager",
-      "repository_id": 1348998414,
+      "repository": "trsdn/threemf-quicklook",
+      "repository_id": 1349836028,
       "build_adapter": "threemfquicklook-xcode",
       "team_id": "G69Z5BNY97",
       "bundle_name": "ThreeMFQuickLook.app",
