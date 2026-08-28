@@ -390,7 +390,10 @@
       "entitlements": "entitlements/threemfquicklook.plist",
       "nested_resource_bundles": [
         {
-          "path": "Contents/Resources/ZIPFoundation_ZIPFoundation.bundle"
+          "path": "Contents/PlugIns/ThreeMFPreviewExtension.appex/Contents/Resources/ZIPFoundation_ZIPFoundation.bundle"
+        },
+        {
+          "path": "Contents/PlugIns/ThreeMFThumbnailExtension.appex/Contents/Resources/ZIPFoundation_ZIPFoundation.bundle"
         }
       ],
       "nested_executables": [
