@@ -16,9 +16,11 @@ on:
           - openlens
           - openswitchr
           - openwritr
+          - printfilemanager
           - ptionsplus
           - spacemender
           - teleprompter
+          - threemfquicklook
       tag:
         description: Existing release tag, for example v1.0.2
         required: true

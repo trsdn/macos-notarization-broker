@@ -334,6 +334,88 @@
           "name": "OpenSwitchr-v{version}-macOS-arm64.dmg"
         }
       ]
+    },
+    "printfilemanager": {
+      "repository": "trsdn/printfilemanager",
+      "repository_id": 1348998414,
+      "build_adapter": "printfilemanager-xcode",
+      "team_id": "G69Z5BNY97",
+      "bundle_name": "PrintFileManager.app",
+      "bundle_identifier": "com.printfilemanager.PrintFileManager",
+      "bundle_display_name": "Print File Manager",
+      "executable": "PrintFileManager",
+      "package_type": "APPL",
+      "architectures": [
+        "arm64"
+      ],
+      "minimum_system_version": "15.0",
+      "entitlements": "entitlements/printfilemanager.plist",
+      "dmg_volume_name": "Print File Manager",
+      "max_archive_bytes": 134217728,
+      "max_uncompressed_bytes": 268435456,
+      "max_files": 2000,
+      "artifacts": [
+        {
+          "type": "zip",
+          "name": "PrintFileManager-v{version}-macOS-arm64.zip"
+        },
+        {
+          "type": "dmg",
+          "name": "PrintFileManager-v{version}-macOS-arm64.dmg"
+        }
+      ]
+    },
+    "threemfquicklook": {
+      "repository": "trsdn/printfilemanager",
+      "repository_id": 1348998414,
+      "build_adapter": "threemfquicklook-xcode",
+      "team_id": "G69Z5BNY97",
+      "bundle_name": "ThreeMFQuickLook.app",
+      "bundle_identifier": "com.printfilemanager.ThreeMFQuickLook",
+      "bundle_display_name": "3MF Quick Look",
+      "executable": "ThreeMFQuickLook",
+      "package_type": "APPL",
+      "architectures": [
+        "arm64"
+      ],
+      "minimum_system_version": "15.0",
+      "entitlements": "entitlements/threemfquicklook.plist",
+      "nested_executables": [
+        {
+          "path": "Contents/PlugIns/ThreeMFPreviewExtension.appex/Contents/MacOS/ThreeMFPreviewExtension",
+          "identifier": "com.printfilemanager.ThreeMFQuickLook.preview",
+          "entitlements": "entitlements/threemfquicklook-extension.plist",
+          "plugin_bundle": {
+            "path": "Contents/PlugIns/ThreeMFPreviewExtension.appex",
+            "identifier": "com.printfilemanager.ThreeMFQuickLook.preview",
+            "package_type": "XPC!"
+          }
+        },
+        {
+          "path": "Contents/PlugIns/ThreeMFThumbnailExtension.appex/Contents/MacOS/ThreeMFThumbnailExtension",
+          "identifier": "com.printfilemanager.ThreeMFQuickLook.thumbnail",
+          "entitlements": "entitlements/threemfquicklook-extension.plist",
+          "plugin_bundle": {
+            "path": "Contents/PlugIns/ThreeMFThumbnailExtension.appex",
+            "identifier": "com.printfilemanager.ThreeMFQuickLook.thumbnail",
+            "package_type": "XPC!"
+          }
+        }
+      ],
+      "dmg_volume_name": "3MF Quick Look",
+      "max_archive_bytes": 134217728,
+      "max_uncompressed_bytes": 268435456,
+      "max_files": 2000,
+      "artifacts": [
+        {
+          "type": "zip",
+          "name": "ThreeMFQuickLook-v{version}-macOS-arm64.zip"
+        },
+        {
+          "type": "dmg",
+          "name": "ThreeMFQuickLook-v{version}-macOS-arm64.dmg"
+        }
+      ]
     }
   }
 }

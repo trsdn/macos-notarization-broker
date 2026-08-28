@@ -78,6 +78,8 @@ class ProfileTests(unittest.TestCase):
             set(profiles),
             {
                 "better-kampfinsel",
+                "printfilemanager",
+                "threemfquicklook",
                 "md2loop",
                 "openconnct",
                 "opendefendrwatchr",
@@ -158,16 +160,23 @@ class ProfileTests(unittest.TestCase):
     def test_profiles_shipping_nested_code_are_declared(self) -> None:
         # spacemender ships a privileged XPC helper; openconnct ships a CoreAudio
         # HAL plug-in; openlens ships a camera system extension; better-kampfinsel
-        # ships a Safari web extension appex. Any new profile
-        # that embeds nested code must be added here deliberately so the extra
-        # signing and validation surface is reviewed.
+        # ships a Safari web extension appex; threemfquicklook ships two Quick Look
+        # appex bundles, which are sandboxed, read-only and hold no network
+        # entitlement. Any new profile that embeds nested code must be added here
+        # deliberately so the extra signing and validation surface is reviewed.
         profiles = broker.load_profiles()
         shipping = {
             name for name, profile in profiles.items() if profile.get("nested_executables")
         }
         self.assertEqual(
             shipping,
-            {"better-kampfinsel", "openconnct", "openlens", "spacemender"},
+            {
+                "better-kampfinsel",
+                "openconnct",
+                "openlens",
+                "spacemender",
+                "threemfquicklook",
+            },
         )
 
     def test_better_kampfinsel_declares_exactly_one_safari_extension(self) -> None:

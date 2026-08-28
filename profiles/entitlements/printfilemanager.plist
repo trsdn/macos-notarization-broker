@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.app-sandbox</key>
+	<true/>
+	<!-- Library roots and the managed folder are chosen through an open panel, and access is
+	     kept across launches with app-scoped bookmarks. -->
+	<key>com.apple.security.files.user-selected.read-write</key>
+	<true/>
+	<key>com.apple.security.files.bookmarks.app-scope</key>
+	<true/>
+	<!-- Outbound only, for AI enrichment and web source lookup. Both are opt-in and default
+	     to off, so a stock install makes no network call at all. -->
+	<key>com.apple.security.network.client</key>
+	<true/>
+</dict>
+</plist>
