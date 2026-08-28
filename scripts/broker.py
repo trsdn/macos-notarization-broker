@@ -1114,7 +1114,6 @@ def build_printfilemanager(
         directory="printfilemanager",
         project="PrintFileManager.xcodeproj",
         scheme="PrintFileManager",
-        local_packages=("ThreeMFKit",),
     )
 
 
