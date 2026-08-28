@@ -43,6 +43,41 @@ stores the certificate and notarization credentials. The first run may stop
 after creating the environment so you can add a required reviewer; rerun it to
 finish.
 
+### Apps with restricted entitlements
+
+Some entitlements — installing a system extension, Endpoint Security, a network
+extension, DriverKit — are *restricted*: macOS only honours one if the bundle
+embeds a provisioning profile that grants it. Nothing in this pipeline notices
+a missing profile. Signing succeeds, notarization succeeds, stapling succeeds,
+Gatekeeper says "accepted", and the app then dies at launch with a bare
+`Launch failed` (`AppleMobileFileIntegrityError -413`, "No matching profile
+found"). A profile that claims such an entitlement is therefore rejected here
+unless it also declares where its provisioning profile comes from:
+
+```json
+"provisioning_profile": { "secret": "YOURAPP_PROVISIONING_PROFILE" }
+```
+
+The profile must be a **Developer ID** one from the Apple Developer portal —
+Profiles → **+** → Distribution → Developer ID — for the app's App ID and its
+Developer ID Application certificate. An Xcode "Mac Team Provisioning Profile"
+will not do: it is issued for a fixed list of registered Macs, so it validates
+on the maintainer's machine and fails on every other. The broker refuses one.
+
+Store it in the same environment, base64-encoded:
+
+```bash
+base64 -i YourApp.provisionprofile | \
+  gh secret set YOURAPP_PROVISIONING_PROFILE --env macos-signing
+```
+
+The app's entitlements must also carry `com.apple.application-identifier`
+(`TEAMID.bundle.identifier`) and `com.apple.developer.team-identifier`, because
+macOS pairs the signature with the profile through them. Before embedding
+anything, the sign job checks the profile's team, expiry, device scope, granted
+entitlements and app identifier, so a mismatch fails the run instead of
+producing a release nobody can start.
+
 ## Run
 
 Use **Actions → Notarize macOS release → Run workflow** from `main`, or:

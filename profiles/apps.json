@@ -237,6 +237,9 @@
       ],
       "minimum_system_version": "14.0",
       "entitlements": "entitlements/openlens.plist",
+      "provisioning_profile": {
+        "secret": "OPENLENS_PROVISIONING_PROFILE"
+      },
       "nested_executables": [
         {
           "path": "Contents/Library/SystemExtensions/com.trsdn.openlens.camera.systemextension/Contents/MacOS/com.trsdn.openlens.camera",
