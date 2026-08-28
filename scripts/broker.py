@@ -108,29 +108,10 @@ RESTRICTED_ENTITLEMENTS = frozenset(
         "com.apple.vm.networking",
     }
 )
-PROVISIONING_PROFILE_FIELDS = {"profile_type"}
-# Developer ID distribution is "direct" in App Store Connect's vocabulary. It is
-# the only kind of profile this broker has any business issuing: everything it
-# signs is distributed outside the Mac App Store.
-PROVISIONING_PROFILE_TYPES = {"MAC_APP_DIRECT"}
+PROVISIONING_PROFILE_FIELDS = {"path"}
 # Where an application bundle carries its profile. Apple fixes both the name and
 # the location; nothing else is read at launch.
 PROVISIONING_PROFILE_PATH = "Contents/embedded.provisionprofile"
-# Profiles are issued through the App Store Connect API rather than stored as a
-# secret, so nobody has to download one by hand and nothing silently expires.
-ASC_API_ROOT = "https://api.appstoreconnect.apple.com/v1"
-ASC_TOKEN_LIFETIME = 600
-ASC_TIMEOUT = 60
-# Apple reissues a profile only when asked, so one that is close to expiry is
-# replaced now rather than during the release that would have been broken by it.
-PROVISIONING_RENEWAL_DAYS = 30
-# A restricted entitlement is only granted to a profile once the App ID carries
-# the matching capability. Only entitlements whose capability name is known are
-# listed; anything else is left to Apple to reject with its own message.
-ENTITLEMENT_CAPABILITIES = {
-    "com.apple.developer.networking.networkextension": "NETWORK_EXTENSIONS",
-    "com.apple.developer.system-extension.install": "SYSTEM_EXTENSION",
-}
 
 
 class BrokerError(RuntimeError):
@@ -285,11 +266,8 @@ def validate_provisioning_policy(
                 f"Profile {name} provisioning_profile is missing fields: "
                 f"{', '.join(sorted(missing))}."
             )
-        if str(declared["profile_type"]) not in PROVISIONING_PROFILE_TYPES:
-            fail(
-                f"Profile {name} provisioning_profile type must be one of: "
-                f"{', '.join(sorted(PROVISIONING_PROFILE_TYPES))}."
-            )
+        if not safe_profile_path(str(declared["path"])).is_file():
+            fail(f"Profile {name} provisioning_profile path does not exist.")
         if "team_id" not in profile:
             # The embedded profile is checked against the signing team, so a
             # profile that ships one has to say which team it belongs to.
@@ -2055,333 +2033,18 @@ def verify_preflight_manifest(
         fail("Preflight manifest nested executable digests do not match the revalidated bundle.")
 
 
-def base64url(data: bytes) -> str:
-    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+def read_provisioning_profile(app: str, profile: dict[str, Any]) -> bytes:
+    """Read the app's provisioning profile from the broker repository.
 
-
-def der_signature_to_jose(signature: bytes) -> bytes:
-    """Convert openssl's DER ECDSA signature into the raw r||s a JWT carries.
-
-    openssl only emits DER and a JWT only accepts the fixed-width pair, so the
-    two integers are unpacked by hand rather than pulling in a crypto library.
+    A provisioning profile is not a secret: a copy of it ships inside every
+    downloaded app. Keeping it in the repository rather than in the signing
+    environment means it is reviewable, diffable, and replaceable by a pull
+    request instead of by an unlogged secret update.
     """
-    if len(signature) < 8 or signature[0] != 0x30:
-        fail("App Store Connect token signature is not a DER sequence.")
-    # A P-256 signature never exceeds 72 bytes, so the length is always short form.
-    if signature[1] != len(signature) - 2:
-        fail("App Store Connect token signature has an unexpected length.")
-    numbers = []
-    offset = 2
-    for _ in range(2):
-        if offset + 2 > len(signature) or signature[offset] != 0x02:
-            fail("App Store Connect token signature is malformed.")
-        size = signature[offset + 1]
-        offset += 2
-        if offset + size > len(signature):
-            fail("App Store Connect token signature is truncated.")
-        numbers.append(int.from_bytes(signature[offset : offset + size], "big"))
-        offset += size
-    if offset != len(signature):
-        fail("App Store Connect token signature has trailing data.")
-    return b"".join(number.to_bytes(32, "big") for number in numbers)
-
-
-def app_store_connect_token(key_id: str, issuer_id: str, private_key: Path, work: Path) -> str:
-    """Mint a short-lived ES256 bearer token for the App Store Connect API."""
-    now = int(datetime.datetime.now(datetime.timezone.utc).timestamp())
-    header = {"alg": "ES256", "kid": key_id, "typ": "JWT"}
-    claims = {
-        "iss": issuer_id,
-        "iat": now,
-        "exp": now + ASC_TOKEN_LIFETIME,
-        "aud": "appstoreconnect-v1",
-    }
-    signing_input = ".".join(
-        base64url(json.dumps(part, separators=(",", ":"), sort_keys=True).encode("utf-8"))
-        for part in (header, claims)
-    )
-    message = work / "asc-token-input"
-    signature_path = work / "asc-token-signature"
-    try:
-        message.write_text(signing_input, encoding="ascii")
-        run(
-            [
-                "openssl",
-                "dgst",
-                "-sha256",
-                "-sign",
-                str(private_key),
-                "-out",
-                str(signature_path),
-                str(message),
-            ],
-            display=False,
-        )
-        signature = der_signature_to_jose(signature_path.read_bytes())
-    finally:
-        message.unlink(missing_ok=True)
-        signature_path.unlink(missing_ok=True)
-    return f"{signing_input}.{base64url(signature)}"
-
-
-def describe_asc_error(error: urllib.error.HTTPError) -> str:
-    """Surface Apple's own explanation instead of a bare status code."""
-    try:
-        document = json.loads(error.read().decode("utf-8"))
-    except (ValueError, OSError, UnicodeDecodeError):
-        return f"HTTP {error.code}"
-    problems = []
-    for record in document.get("errors", []) if isinstance(document, dict) else []:
-        if not isinstance(record, dict):
-            continue
-        text = " - ".join(
-            str(record[field]) for field in ("title", "detail") if record.get(field)
-        )
-        if text:
-            problems.append(text)
-    if not problems:
-        return f"HTTP {error.code}"
-    return f"HTTP {error.code}: {'; '.join(problems)}"
-
-
-def app_store_connect_request(
-    token: str,
-    method: str,
-    path: str,
-    payload: dict[str, Any] | None = None,
-    query: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    url = f"{ASC_API_ROOT}{path}"
-    if query:
-        url = f"{url}?{urllib.parse.urlencode(query)}"
-    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
-    body = None
-    if payload is not None:
-        body = json.dumps(payload).encode("utf-8")
-        headers["Content-Type"] = "application/json"
-    request = urllib.request.Request(url, data=body, headers=headers, method=method)
-    try:
-        with urllib.request.urlopen(request, timeout=ASC_TIMEOUT) as response:
-            raw = response.read()
-    except urllib.error.HTTPError as error:
-        fail(f"App Store Connect {method} {path} failed: {describe_asc_error(error)}")
-    except urllib.error.URLError as error:
-        fail(f"App Store Connect {method} {path} failed: {error.reason}")
-    if not raw:
-        return {}
-    try:
-        document = json.loads(raw.decode("utf-8"))
-    except (ValueError, UnicodeDecodeError) as error:
-        fail(f"App Store Connect {method} {path} returned unreadable JSON: {error}")
-    if not isinstance(document, dict):
-        fail(f"App Store Connect {method} {path} returned an unexpected document.")
-    return document
-
-
-def parse_asc_timestamp(value: Any) -> datetime.datetime | None:
-    """Read an App Store Connect date, or give up rather than guess."""
-    if not isinstance(value, str):
-        return None
-    text = value.replace("Z", "+00:00")
-    # Apple writes "+0000" where fromisoformat wants "+00:00" on older runtimes.
-    if re.search(r"[+-][0-9]{4}$", text):
-        text = f"{text[:-2]}:{text[-2:]}"
-    try:
-        parsed = datetime.datetime.fromisoformat(text)
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=datetime.timezone.utc)
-    return parsed
-
-
-def ensure_bundle_identifier(token: str, identifier: str) -> str:
-    """Return the App ID record for the bundle, registering it when it is new."""
-    found = app_store_connect_request(
-        token,
-        "GET",
-        "/bundleIds",
-        query={"filter[identifier]": identifier, "limit": 200},
-    )
-    for record in found.get("data", []):
-        if record.get("attributes", {}).get("identifier") == identifier:
-            return str(record["id"])
-    created = app_store_connect_request(
-        token,
-        "POST",
-        "/bundleIds",
-        payload={
-            "data": {
-                "type": "bundleIds",
-                "attributes": {
-                    "identifier": identifier,
-                    # Apple rejects punctuation in App ID names.
-                    "name": re.sub(r"[^A-Za-z0-9 ]", " ", identifier).strip(),
-                    "platform": "MAC_OS",
-                },
-            }
-        },
-    )
-    return str(created["data"]["id"])
-
-
-def ensure_bundle_capabilities(
-    token: str, bundle_id: str, entitlements: dict[str, Any]
-) -> list[str]:
-    """Turn on the App ID capabilities the restricted entitlements depend on."""
-    existing = app_store_connect_request(
-        token,
-        "GET",
-        f"/bundleIds/{bundle_id}/bundleIdCapabilities",
-        query={"limit": 200},
-    )
-    present = {
-        record.get("attributes", {}).get("capabilityType")
-        for record in existing.get("data", [])
-    }
-    enabled = []
-    for entitlement in restricted_entitlements(entitlements):
-        capability = ENTITLEMENT_CAPABILITIES.get(entitlement)
-        if capability is None or capability in present:
-            continue
-        app_store_connect_request(
-            token,
-            "POST",
-            "/bundleIdCapabilities",
-            payload={
-                "data": {
-                    "type": "bundleIdCapabilities",
-                    "attributes": {"capabilityType": capability},
-                    "relationships": {
-                        "bundleId": {"data": {"type": "bundleIds", "id": bundle_id}}
-                    },
-                }
-            },
-        )
-        enabled.append(capability)
-    return enabled
-
-
-def developer_id_certificate_ids(token: str) -> list[str]:
-    """Every unexpired Developer ID Application certificate the team owns.
-
-    All of them go into the profile: the profile has to cover whichever one the
-    signing job ends up using, and pinning a single certificate would turn a
-    routine certificate rotation into a release that will not launch.
-    """
-    records = app_store_connect_request(
-        token,
-        "GET",
-        "/certificates",
-        query={"filter[certificateType]": "DEVELOPER_ID_APPLICATION", "limit": 200},
-    )
-    now = datetime.datetime.now(datetime.timezone.utc)
-    identifiers = []
-    for record in records.get("data", []):
-        expiration = parse_asc_timestamp(record.get("attributes", {}).get("expirationDate"))
-        if expiration is not None and expiration <= now:
-            continue
-        identifiers.append(str(record["id"]))
-    if not identifiers:
-        fail("The team owns no valid Developer ID Application certificate.")
-    return identifiers
-
-
-def issue_provisioning_profile(
-    app: str, profile: dict[str, Any], entitlements: dict[str, Any], work: Path
-) -> bytes:
-    """Obtain a Developer ID profile for the app straight from Apple.
-
-    The profile is issued here rather than stored as a secret so that nobody has
-    to download one by hand, and so that a profile nearing expiry is replaced by
-    the release that would otherwise have shipped broken.
-    """
-    required = ("ASC_KEY_ID", "ASC_ISSUER_ID", "ASC_PRIVATE_KEY")
-    missing = [name for name in required if not os.environ.get(name)]
-    if missing:
-        fail(
-            "Signing environment is missing App Store Connect API credentials: "
-            f"{', '.join(missing)}"
-        )
-    key_material = os.environ["ASC_PRIVATE_KEY"].strip()
-    if key_material.startswith("-----"):
-        key_bytes = key_material.encode("ascii")
-    else:
-        try:
-            key_bytes = base64.b64decode(key_material, validate=True)
-        except ValueError as error:
-            fail(f"ASC_PRIVATE_KEY is neither a PEM key nor valid base64: {error}")
-    key_path = work / "asc-key.p8"
-    key_path.write_bytes(key_bytes)
-    key_path.chmod(0o600)
-    try:
-        token = app_store_connect_token(
-            os.environ["ASC_KEY_ID"], os.environ["ASC_ISSUER_ID"], key_path, work
-        )
-        identifier = profile["bundle_identifier"]
-        bundle_id = ensure_bundle_identifier(token, identifier)
-        ensure_bundle_capabilities(token, bundle_id, entitlements)
-        certificates = developer_id_certificate_ids(token)
-        profile_type = profile["provisioning_profile"]["profile_type"]
-        profile_name = f"Broker {app} Developer ID"
-
-        existing = app_store_connect_request(
-            token,
-            "GET",
-            "/profiles",
-            query={
-                "filter[name]": profile_name,
-                "limit": 200,
-                "fields[profiles]": "name,profileType,profileState,expirationDate,profileContent",
-            },
-        )
-        renew_after = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(
-            days=PROVISIONING_RENEWAL_DAYS
-        )
-        for record in existing.get("data", []):
-            attributes = record.get("attributes", {})
-            if attributes.get("name") != profile_name:
-                continue
-            expiration = parse_asc_timestamp(attributes.get("expirationDate"))
-            content = attributes.get("profileContent")
-            if (
-                attributes.get("profileState") == "ACTIVE"
-                and attributes.get("profileType") == profile_type
-                and expiration is not None
-                and expiration > renew_after
-                and content
-            ):
-                return base64.b64decode(content)
-            # Apple will not reissue under a name that is still taken, so a
-            # profile that is stale, expiring or of the wrong type goes first.
-            app_store_connect_request(token, "DELETE", f"/profiles/{record['id']}")
-
-        created = app_store_connect_request(
-            token,
-            "POST",
-            "/profiles",
-            payload={
-                "data": {
-                    "type": "profiles",
-                    "attributes": {"name": profile_name, "profileType": profile_type},
-                    "relationships": {
-                        "bundleId": {"data": {"type": "bundleIds", "id": bundle_id}},
-                        "certificates": {
-                            "data": [
-                                {"type": "certificates", "id": certificate}
-                                for certificate in certificates
-                            ]
-                        },
-                    },
-                }
-            },
-        )
-        content = created.get("data", {}).get("attributes", {}).get("profileContent")
-        if not content:
-            fail("App Store Connect issued a profile without any content.")
-        return base64.b64decode(content)
-    finally:
-        key_path.unlink(missing_ok=True)
+    path = safe_profile_path(profile["provisioning_profile"]["path"])
+    if not path.is_file():
+        fail(f"Profile {app} declares a provisioning profile that is missing: {path.name}")
+    return path.read_bytes()
 
 
 def signing_certificate_hashes(keychain: Path) -> set[str]:
@@ -2414,7 +2077,7 @@ def embed_provisioning_profile(
     if declared is None:
         return None
 
-    payload = issue_provisioning_profile(app, profile, expected_entitlements, work)
+    payload = read_provisioning_profile(app, profile)
 
     source = work / "embedded.provisionprofile"
     source.write_bytes(payload)
@@ -2431,9 +2094,9 @@ def embed_provisioning_profile(
         with decoded_path.open("rb") as handle:
             contents = plistlib.load(handle)
     except (plistlib.InvalidFileException, ValueError) as error:
-        fail(f"App Store Connect did not return a provisioning profile: {error}")
+        fail(f"The stored file is not a provisioning profile: {error}")
     if not isinstance(contents, dict):
-        fail("App Store Connect did not return a provisioning profile.")
+        fail("The stored file is not a provisioning profile.")
 
     if team_id not in contents.get("TeamIdentifier", []):
         fail(f"Provisioning profile belongs to another team than {team_id}.")
@@ -2496,8 +2159,7 @@ def embed_provisioning_profile(
         "uuid": contents.get("UUID"),
         "expires": expiration.date().isoformat(),
         "sha256": sha256_file(destination),
-        "profile_type": declared["profile_type"],
-        "source": "app-store-connect",
+        "path": declared["path"],
     }
 
 

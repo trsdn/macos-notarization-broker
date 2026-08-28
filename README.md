@@ -52,36 +52,32 @@ a missing profile. Signing succeeds, notarization succeeds, stapling succeeds,
 Gatekeeper says "accepted", and the app then dies at launch with a bare
 `Launch failed` (`AppleMobileFileIntegrityError -413`, "No matching profile
 found"). A profile that claims such an entitlement is therefore rejected here
-unless it also declares the kind of provisioning profile it needs:
+unless it also points at the profile it needs:
 
 ```json
-"provisioning_profile": { "profile_type": "MAC_APP_DIRECT" }
+"provisioning_profile": { "path": "provisioning/yourapp.provisionprofile" }
 ```
 
-Nobody downloads that profile. The sign job issues it through the App Store
-Connect API for the app's bundle identifier, registering the App ID and enabling
-the matching capability if they do not exist yet, and reissues it once it comes
-within 30 days of expiry. `MAC_APP_DIRECT` is Apple's name for Developer ID
-distribution; an Xcode "Mac Team Provisioning Profile" is issued for a fixed
-list of registered Macs, so it validates on the maintainer's machine and fails
-on every other, and the broker refuses one.
+The profile lives in this repository, next to the entitlements it belongs to. It
+is not a secret: a copy of it ships inside every downloaded app. Keeping it here
+rather than in the signing environment means it is reviewable, diffable, and
+replaced by a pull request instead of by an unlogged secret update. A declared
+path that does not exist fails when the profiles load, before any signing job
+has touched a credential.
 
-That needs an App Store Connect API key with the Developer Resources role, set
-up once for every app the broker will ever sign (App Store Connect → Users and
-Access → Integrations → App Store Connect API):
-
-```bash
-gh secret set ASC_KEY_ID     --env macos-signing   # the key's ID
-gh secret set ASC_ISSUER_ID  --env macos-signing   # the issuer ID above the key
-base64 -i AuthKey_XXXXXXXX.p8 | gh secret set ASC_PRIVATE_KEY --env macos-signing
-```
+It must be a **Developer ID** profile from the Apple Developer portal —
+Profiles → **+** → Distribution → Developer ID — for the app's App ID, whose
+capabilities have to include whatever the restricted entitlement needs. An Xcode
+"Mac Team Provisioning Profile" will not do: it is issued for a fixed list of
+registered Macs, so it validates on the maintainer's machine and fails on every
+other. The broker refuses one.
 
 The app's entitlements must also carry `com.apple.application-identifier`
 (`TEAMID.bundle.identifier`) and `com.apple.developer.team-identifier`, because
 macOS pairs the signature with the profile through them. Before embedding
-anything, the sign job checks the issued profile's team, expiry, device scope,
-granted entitlements, app identifier and signing certificate, so a mismatch
-fails the run instead of producing a release nobody can start.
+anything, the sign job checks the profile's team, expiry, device scope, granted
+entitlements, app identifier and signing certificate, so a mismatch or an
+expired profile fails the run instead of producing a release nobody can start.
 
 ## Run
 
