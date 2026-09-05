@@ -91,6 +91,8 @@ class ProfileTests(unittest.TestCase):
                 "openwritr",
                 "ptionsplus",
                 "spacemender",
+                "subvocal",
+                "subvocal-light",
                 "teleprompter",
             },
         )

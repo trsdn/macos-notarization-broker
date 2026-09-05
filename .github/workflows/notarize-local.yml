@@ -1,0 +1,166 @@
+name: Notarize encrypted local release
+run-name: Local notarize ${{ inputs.app }} ${{ inputs.tag }} (${{ inputs.request_id }})
+
+on:
+  workflow_dispatch:
+    inputs:
+      app:
+        type: choice
+        required: true
+        options:
+          - subvocal
+          - subvocal-light
+      tag:
+        type: string
+        required: true
+      source_sha:
+        type: string
+        required: true
+      source_ref_sha:
+        type: string
+        required: true
+      source_tag_object_sha:
+        type: string
+        required: false
+        default: ""
+      archive_sha256:
+        type: string
+        required: true
+      return_recipient:
+        type: string
+        required: true
+      request_id:
+        type: string
+        required: true
+
+permissions: {}
+
+concurrency:
+  group: local-notarize-${{ inputs.app }}-${{ inputs.tag }}
+  cancel-in-progress: false
+
+env:
+  INPUT_APP: ${{ inputs.app }}
+  INPUT_TAG: ${{ inputs.tag }}
+  INPUT_SOURCE_SHA: ${{ inputs.source_sha }}
+  INPUT_SOURCE_REF_SHA: ${{ inputs.source_ref_sha }}
+  INPUT_SOURCE_TAG_OBJECT_SHA: ${{ inputs.source_tag_object_sha }}
+  INPUT_ARCHIVE_SHA256: ${{ inputs.archive_sha256 }}
+  INPUT_RETURN_RECIPIENT: ${{ inputs.return_recipient }}
+  INPUT_REQUEST_ID: ${{ inputs.request_id }}
+
+jobs:
+  preflight:
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/main' &&
+      github.repository == 'trsdn/macos-notarization-broker' &&
+      github.event.repository.id == 1315404585 &&
+      github.actor_id == '24534196' &&
+      github.run_attempt == 1
+    runs-on: macos-15
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      ciphertext_sha256: ${{ steps.validate.outputs.ciphertext_sha256 }}
+      tree_sha256: ${{ steps.validate.outputs.tree_sha256 }}
+    steps:
+      - name: Check out immutable broker logic
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Generate ephemeral preflight challenge
+        run: python3 scripts/local_handoff.py start
+
+      - name: Publish public recipient challenge
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: local-challenge-${{ inputs.request_id }}
+          path: .local-handoff/public/challenge.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Validate encrypted local application on independent runner
+        id: validate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/local_handoff.py preflight
+
+      - name: Upload encrypted validated payload
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: local-validated-${{ inputs.request_id }}
+          path: .local-handoff/outbound/validated.age
+          include-hidden-files: true
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+      - name: Remove private runner state
+        if: always()
+        run: rm -rf .local-handoff
+
+  sign:
+    needs: preflight
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/main' &&
+      github.repository == 'trsdn/macos-notarization-broker' &&
+      github.event.repository.id == 1315404585 &&
+      github.actor_id == '24534196' &&
+      github.run_attempt == 1
+    runs-on: macos-15
+    timeout-minutes: 90
+    environment: macos-signing
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Check out immutable broker logic
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Download exact encrypted preflight artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.preflight.outputs.artifact_id }}
+          path: encrypted-input
+          merge-multiple: true
+
+      - name: Decrypt and independently revalidate before Apple credentials
+        env:
+          LOCAL_HANDOFF_AGE_IDENTITY: ${{ secrets.LOCAL_HANDOFF_AGE_IDENTITY }}
+          EXPECTED_CIPHERTEXT_SHA256: ${{ needs.preflight.outputs.ciphertext_sha256 }}
+          EXPECTED_TREE_SHA256: ${{ needs.preflight.outputs.tree_sha256 }}
+        run: python3 scripts/local_handoff.py sign-prepare
+
+      - name: Sign and encrypt artifacts for local owner
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: python3 scripts/local_handoff.py sign-finish
+
+      - name: Upload only encrypted results
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: local-result-${{ inputs.request_id }}
+          path: .local-handoff/outbound/result.age
+          include-hidden-files: true
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+      - name: Remove private runner state
+        if: always()
+        run: rm -rf .local-handoff encrypted-input

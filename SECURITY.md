@@ -25,10 +25,12 @@ The repository also runs a continuous integration workflow
 (`.github/workflows/ci.yml`) on pull requests and pushes to `main`. It is
 deliberately outside the signing trust boundary: it has no Apple secrets, no
 protected environment, and read-only permissions, and it only runs the tests and
-static checks in this repository. `scripts/validate-repository.py` fails if any
-workflow other than `notarize.yml` references a secret, uses an environment,
-grants a non-read permission, uses `pull_request_target`, uses an unpinned
-action, or interpolates a GitHub expression into a shell command.
+static checks in this repository. `scripts/validate-repository.py` rejects
+secrets and environments in ordinary supporting workflows. It separately
+enforces the exact privileged boundaries of `notarize.yml`,
+`notarize-local.yml`, and the one-time sealed migration workflow below; these
+are not blanket exemptions. Non-read permissions, unpinned actions and
+untrusted-source execution remain forbidden in the privileged paths.
 
 ## Required repository settings
 
@@ -94,6 +96,23 @@ repository is private. In that case:
 
 This repository does not automate or change repository visibility.
 
+### One-time sealed signing-secret migration
+
+The only additional credential-reading workflow allowed by static policy is
+`migrate-signing-secrets.yml`. It is manual, owner-ID/main gated, and has exactly
+one job protected by `macos-signing`. Its sole secret-consuming step passes the
+five existing Apple values to the broker-owned migration script. It may not
+check out or execute application source, grant write permissions, or use other
+actions besides SHA-pinned checkout and ciphertext upload.
+
+The operator pins GitHub's environment public key and key ID, verifies that the
+workflow seals values directly to that key without logging plaintext, then
+installs only the resulting sealed values through the environment-secret API.
+Repository copies are removed only after the environment has all five values.
+This explicitly approved recovery exception does not permit normal signing from
+repository secrets and does not extend credential access to supporting CI or
+untrusted builds. Disable or remove the migration workflow after completion.
+
 ## Fork and outside-user behavior
 
 The notarization workflow has no `pull_request`, `pull_request_target`, `push`,
@@ -126,6 +145,75 @@ runner with no access to repository secrets or the `GITHUB_TOKEN` write scopes.
 - Final provenance records the source commit and release-file SHA-256 values.
 
 ## Profile review requirements
+
+### Private source repositories
+
+The public broker does not support private source checkout. Profiles declare
+`source_visibility: "private"` to block the source-checkout pipeline;
+resolve and build reject these profiles before processing source. Resolution
+also rejects repositories reported as private by GitHub, regardless of a
+profile's declared visibility. Supplying a private-repository PAT is not an
+approved workaround: source-controlled manifests, compiler diagnostics, and
+untrusted build output can disclose private code in public logs or artifacts.
+Private applications use the separate encrypted local handoff described below,
+which preserves signing approval and fresh-runner preflight without ever
+checking out their source.
+
+Subvocal's two profiles intentionally omit the restricted shared-keychain
+entitlement and any provisioning profile. Their independent preflight rejects
+the Info.plist capability marker that would advertise protected artifacts.
+The broker uses its own microphone-only entitlements, never source entitlements.
+The two exact resource bundle declarations authorize data only; symlinks,
+additional nested bundles, executable resources, and Mach-O resources retain
+the existing rejection rules.
+
+### Encrypted owner-attested handoff
+
+`notarize-local.yml` accepts only the two reviewed Subvocal profiles, manual
+dispatch by the immutable owner ID on upstream `main`, and a first run attempt.
+Its eight inputs bind the tag, commit and tag-object identities, unsigned
+archive digest, request nonce, and local return recipient. It is not an
+arbitrary URL or repository fetch API. Static policy requires exactly two jobs:
+
+1. Independent preflight, with read-only permissions, no environment and no
+   configured secrets. Its fresh age identity exists only on that runner.
+2. Protected signing, with read-only permissions and `macos-signing` approval.
+   Only its decryption/revalidation step receives `LOCAL_HANDOFF_AGE_IDENTITY`;
+   only the subsequent signing step receives the five Apple credentials.
+
+The owner's local helper verifies the exact workflow run, owner, attempt,
+broker commit, profile/configuration digests and request before encrypting to
+the preflight challenge. Transport is a ciphertext-only asset on the fixed
+broker `local-handoffs` release, uploaded by the owner. Preflight resolves its
+numeric asset ID, verifies the owner, size and GitHub asset digest, authenticates
+age decryption and checks the originally committed plaintext SHA-256. It never
+executes app code. The existing archive and bundle policy remains unchanged.
+
+Preflight's validated archive, manifest and request binding travel together in
+an encrypted, bounded envelope. Signing receives the exact immutable workflow
+artifact ID and ciphertext/tree digests through job outputs, authenticates
+decryption, verifies the entire request binding, and repeats normal preflight
+before any certificate import. Only approved broker code runs in either job.
+The signing recipient is review-controlled; the corresponding private identity
+is environment-only. Age release binaries are pinned by version and SHA-256.
+
+The signed outputs and provenance are encrypted back to the request's local
+recipient. No decrypted artifact, provisioning material, plaintext diagnostics,
+source or local `gh` token is stored in public artifacts/releases/logs. The
+remote wrapper suppresses Python and subprocess diagnostics at the file
+descriptor boundary; public messages are fixed status strings. The workflow
+uploads only three exact paths: public challenge JSON, validated ciphertext,
+and result ciphertext. Cleanup removes private runner state on success/failure.
+Encryption leaks ciphertext size and request timing, not content.
+
+This path deliberately uses **owner-attested local-build provenance**, not
+independent source-build provenance. The helper checks the private source tag
+before dispatch, again before upload, and before accepting results; the broker
+does not query that private repository or claim that it compiled the source.
+Approval authorizes the immutable submitted bytes for the attested source.
+Moving a private tag after these checks remains detectable locally but is not
+visible to the public runner. Never silently replace this label with the public
+source workflow's provenance claim.
 
 Profiles may contain only declarative repository, bundle, validation, signing,
 and output policy. Do not add:

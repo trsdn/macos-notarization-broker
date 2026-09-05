@@ -115,6 +115,120 @@ the preflight verifies the shipped binaries carry exactly those. See
 Each distributable ships with a `.sha256` file, alongside `provenance.json` and
 `preflight-manifest.json` in the workflow artifact.
 
+### Subvocal Full and Light (encrypted local builds)
+
+The prepared `subvocal` and `subvocal-light` profiles describe Apple Silicon,
+macOS 15+ releases. They preserve the download names `Subvocal.dmg` and
+`SubvocalLight.dmg`, with additional versioned
+`Subvocal-v{version}-macOS-arm64.zip` and
+`SubvocalLight-v{version}-macOS-arm64.zip` archives.
+
+Their source repository stays private. `notarize.yml` intentionally rejects
+these profiles before fetching source or building. Use the separate
+`notarize-local.yml` encrypted handoff below. Do not add a source PAT to the
+public workflow or change repository visibility.
+
+The broker-owned build adapter runs no source packaging scripts. Local handoff
+accepts owner-built unsigned apps subject to the same bundle policy. The source
+and packaging contract is:
+
+- Swift 6.2+ and `Subvocal/Package.swift`, products `Subvocal` / `SubvocalLight`.
+- `Subvocal/Package.resolved` must exactly match the JSON content of
+  `profiles/locks/subvocal-Package.resolved`, including immutable revisions.
+  SwiftPM uses `--only-use-versions-from-resolved-file`; a lock change requires
+  broker review, even for the branch-based OutlookAX dependency.
+- Source plists at `Subvocal/Sources/Subvocal/Info.plist` and
+  `Subvocal/Sources/SubvocalLightApp/Info.plist` already carry the release version
+  (both version keys), flavor identity, privacy descriptions, and `15.0`
+  deployment target. Full retains `LSUIElement=true`, Light `false`.
+- The icon is `Subvocal/Sources/Subvocal/Assets/AppIcon.icns`. Both flavors
+  include exactly the declared SwiftPM resource bundles
+  `Subvocal_SubvocalKit.bundle` and `PLCrashReporter_CrashReporter.bundle` under
+  `Contents/Resources`. No nested executable or framework is authorized.
+- Signing grants only microphone input. No provisioning profile or
+  `keychain-access-groups` entitlement is requested. The
+  `SubvocalArtifactKeyAccessGroup` Info.plist key is rejected in preflight;
+  shared protected artifacts remain unavailable, while the app can launch.
+
+No source-side signing environment variables are needed or supported.
+`PROVISIONING_PROFILE` is not read. Enabling protected artifacts later requires
+a reviewed provisioning/entitlement/metadata policy for both App IDs.
+### Configure encrypted local handoff
+
+The owner generates an age X25519 identity locally, stores it as
+`LOCAL_HANDOFF_AGE_IDENTITY` **only in the protected `macos-signing`
+environment**, and puts its public `age1...` recipient in
+`profiles/local-handoff.json` through broker review. An empty recipient fails
+closed. Never commit the private identity. The five Apple secrets must also be
+environment-scoped before dispatch.
+
+The helper downloads age **v1.3.2** only from the upstream release, verifies its
+platform-specific SHA-256 pin, and extracts only the two regular executable
+files. It does not use a system age binary, shell plugins, or arbitrary
+recipients files.
+
+After the broker changes are reviewed and merged, the local broker checkout
+must be clean and at the exact remote `main` commit. The source checkout must
+be clean, at the release tag's commit, and the same tag must already exist in
+the private GitHub repository. The local helper checks immutable source
+identity, both lightweight/annotated tags, and the broker-pinned package lock.
+
+```bash
+scripts/request-local.sh subvocal v2.0.0 \
+  --source /path/to/private-checkout \
+  --app-bundle "/path/to/private-checkout/dist/Subvocal.app"
+
+scripts/request-local.sh subvocal-light v2.0.0 \
+  --source /path/to/private-checkout \
+  --app-bundle "/path/to/private-checkout/dist/Subvocal Light.app"
+```
+
+The helper validates each unsigned app locally before dispatch. Both declared
+resource bundles must be packaged; a binary-only app is rejected. It stages a
+private copy and adds owner-write permission to resource files/directories
+(SwiftPM's read-only privacy manifest otherwise prevents `xattr` sanitation).
+Executable bits are preserved and still rejected; the supplied app is unchanged.
+It creates
+private local state under `.local-handoff-requests/`, with a one-request return
+identity. Keep that state until results have been received.
+
+The workflow's independent preflight creates an ephemeral recipient and
+publishes a public, run-bound challenge. The local helper verifies the broker
+commit, owner, workflow, attempt, profile digest and request before sending
+anything. It then uploads only ciphertext to the broker's `local-handoffs`
+prerelease (created automatically by the local owner if absent). Existing
+local `gh` authentication performs this upload; no token is sent to a runner.
+The helper returns the run ID and exact `--resume` command:
+
+```bash
+scripts/request-local.sh --resume .local-handoff-requests/local-REQUEST/state.json
+```
+
+Review and approve `macos-signing` separately. Resume only after the run
+succeeds; the helper rechecks the private source tag, decrypts the results,
+verifies provenance and artifact hashes, and deletes the return identity.
+Only then publish the returned assets to the **private** application release.
+This tool neither approves deployments nor publishes an application release.
+
+Preflight has no environment or repository secrets and never compiles or runs
+submitted code. It decrypts on its disposable runner, verifies the committed
+input SHA-256, applies the normal bundle validation, and encrypts validated
+output to the reviewed signing recipient. A separate protected signing runner
+downloads the exact artifact ID, verifies its digest, decrypts and revalidates
+before Apple credentials are available to the signing step. All final output
+is encrypted to the local return recipient. Public artifacts contain only the
+challenge and encrypted payloads; private diagnostics are discarded, not logged.
+
+Provenance explicitly says **`owner-attested-local-build`**. This records the
+owner's assertion that the submitted bytes came from the given source commit;
+it is not a claim that the broker compiled or independently queried the private
+source. Source scripts, credentials, source archives and compilation logs are
+never uploaded. Local tag checks supplement, but do not replace, owner approval.
+Re-running a workflow is rejected; start a fresh request with a fresh recipient.
+The local helper must deliver ciphertext within ten minutes of the challenge.
+Encrypted workflow payloads are retained for 30 days; ciphertext staging
+release assets may be deleted by the owner after successful receipt.
+
 ## Validate changes
 
 Run these from the repository root; CI runs the same checks on every pull

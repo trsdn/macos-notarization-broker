@@ -106,6 +106,7 @@ RESTRICTED_ENTITLEMENTS = frozenset(
         "com.apple.developer.networking.networkextension",
         "com.apple.developer.system-extension.install",
         "com.apple.vm.networking",
+        "keychain-access-groups",
     }
 )
 PROVISIONING_PROFILE_FIELDS = {"path"}
@@ -160,6 +161,7 @@ def load_profiles() -> dict[str, Any]:
         "openwritr-swiftpm",
         "ptionsplus-xcode",
         "spacemender-xcode",
+        "subvocal-swiftpm",
         "teleprompter-swiftpm",
     }
     for name, profile in profiles.items():
@@ -174,6 +176,8 @@ def load_profiles() -> dict[str, Any]:
             fail(f"Profile {name} has an invalid repository.")
         if not isinstance(profile["repository_id"], int) or profile["repository_id"] <= 0:
             fail(f"Profile {name} has an invalid repository ID.")
+        if profile.get("source_visibility", "public") not in {"public", "private"}:
+            fail(f"Profile {name} has an unsupported source visibility.")
         if profile["package_type"] != "APPL":
             fail(f"Profile {name} must describe an application bundle.")
         architectures = profile["architectures"]
@@ -598,8 +602,11 @@ def command_resolve(args: argparse.Namespace) -> None:
     version = validate_tag(args.tag)
     request_id = normalize_request_id(args.request_id)
     profile = get_profile(args.app)
+    require_public_source(profile)
     repository = profile["repository"]
     repository_document = github_api(f"/repos/{repository}")
+    if repository_document.get("private") is True:
+        fail("Private source cannot be processed by the public broker workflow.")
     if repository_document.get("id") != profile["repository_id"]:
         fail("Repository numeric identity does not match the broker profile.")
     if repository_document.get("full_name", "").lower() != repository.lower():
@@ -683,6 +690,15 @@ def ensure_source_file(source: Path, relative_path: str) -> Path:
     if path.is_symlink() or not path.is_file():
         fail(f"Required source file is missing or unsafe: {relative_path}")
     return path
+
+
+def require_public_source(profile: dict[str, Any]) -> None:
+    if profile.get("source_visibility", "public") != "public":
+        fail(
+            "Private source support is not configured. Do not supply a private-repository "
+            "token to the public workflow: build logs and intermediate artifacts can "
+            "disclose source. A reviewed private build and artifact handoff is required."
+        )
 
 
 def copy_app(source_app: Path, destination_app: Path) -> None:
@@ -868,6 +884,71 @@ def assemble_openswitchr(source: Path, work: Path, profile: dict[str, Any]) -> P
     with info_path.open("wb") as handle:
         plistlib.dump(info, handle, sort_keys=True)
     return app
+
+
+def assemble_subvocal(source: Path, work: Path, profile: dict[str, Any]) -> Path:
+    package = source / "Subvocal"
+    ensure_source_file(package, "Package.swift")
+    lock = ensure_source_file(package, "Package.resolved")
+    expected_lock = safe_profile_path(profile["dependency_lock"])
+    if json.loads(lock.read_text()) != json.loads(expected_lock.read_text()):
+        fail("Subvocal Package.resolved differs from the reviewed broker dependency lock.")
+    flavor_directory = (
+        "Subvocal" if profile["executable"] == "Subvocal" else "SubvocalLightApp"
+    )
+    info_path = ensure_source_file(package, f"Sources/{flavor_directory}/Info.plist")
+    with info_path.open("rb") as handle:
+        info = plistlib.load(handle)
+    validate_subvocal_capabilities(info, profile)
+    executable = swift_build(package, profile["executable"], require_lock=True)
+    if json.loads(lock.read_text()) != json.loads(expected_lock.read_text()):
+        fail("Subvocal dependency lock changed during compilation.")
+    app = work / profile["bundle_name"]
+    macos = app / "Contents" / "MacOS"
+    resources = app / "Contents" / "Resources"
+    macos.mkdir(parents=True)
+    resources.mkdir(parents=True)
+    shutil.copy2(executable, macos / profile["executable"])
+    shutil.copy2(info_path, app / "Contents" / "Info.plist")
+    shutil.copy2(
+        ensure_source_file(package, "Sources/Subvocal/Assets/AppIcon.icns"),
+        resources / "AppIcon.icns",
+    )
+    (app / "Contents" / "PkgInfo").write_bytes(b"APPL????")
+    for spec in nested_resource_bundles(profile):
+        bundle = executable.parent / Path(spec["path"]).name
+        if bundle.is_symlink() or not bundle.is_dir():
+            fail(f"Required SwiftPM resource bundle is missing or unsafe: {bundle.name}")
+        # Preserve links and permissions so preflight rejects unsafe content instead
+        # of silently following links or normalizing executable resources.
+        shutil.copytree(bundle, app / spec["path"], symlinks=True)
+    make_resource_bundles_writable(app, profile)
+    return app
+
+
+def make_resource_bundles_writable(app: Path, profile: dict[str, Any]) -> None:
+    # SwiftPM emits PLCrashReporter's privacy manifest read-only. macOS xattr -cr
+    # cannot sanitize it without owner write permission. Normalize only private
+    # packaging copies; retain executable bits so preflight still rejects code.
+    for spec in nested_resource_bundles(profile):
+        root = app / spec["path"]
+        if root.is_symlink() or not root.is_dir():
+            fail(f"Required resource bundle is missing or unsafe: {spec['path']}")
+        for path in (root, *root.rglob("*")):
+            mode = path.lstat().st_mode
+            if not (stat.S_ISREG(mode) or stat.S_ISDIR(mode)):
+                fail("Resource bundles may not contain symlinks or special files.")
+            path.chmod(stat.S_IMODE(mode) | stat.S_IWUSR)
+
+
+def validate_subvocal_capabilities(info: dict[str, Any], profile: dict[str, Any]) -> None:
+    if "SubvocalArtifactKeyAccessGroup" in info:
+        fail("Non-provisioned Subvocal must not advertise protected artifact access.")
+    if info.get("LSUIElement") is not (profile["executable"] == "Subvocal"):
+        fail("Subvocal flavor has an incorrect LSUIElement setting.")
+    for key in ("NSMicrophoneUsageDescription", "NSAudioCaptureUsageDescription"):
+        if not isinstance(info.get(key), str) or not info[key].strip():
+            fail(f"Subvocal requires a non-empty {key}.")
 
 
 def build_ptionsplus(
@@ -1141,6 +1222,7 @@ def command_build(args: argparse.Namespace) -> None:
     require_tools(["ditto", "file", "git", "lipo", "swift", "xcodebuild"])
     version = validate_tag(f"v{args.version}")
     profile = get_profile(args.app)
+    require_public_source(profile)
     source = Path(args.source).resolve()
     if not source.is_dir():
         fail("Source directory does not exist.")
@@ -1180,6 +1262,8 @@ def command_build(args: argparse.Namespace) -> None:
             built_app = build_ptionsplus(source, work, profile, version, args.build_number)
         elif adapter == "spacemender-xcode":
             built_app = build_spacemender(source, work, profile, version, args.build_number)
+        elif adapter == "subvocal-swiftpm":
+            built_app = assemble_subvocal(source, work, profile)
         elif adapter == "teleprompter-swiftpm":
             built_app = assemble_teleprompter(source, work, profile)
         else:
@@ -1597,6 +1681,11 @@ def validate_app_tree(
     nested_records = [validate_nested_executable(app_path, profile, spec) for spec in specs]
 
     info = read_bundle_info(app_path)
+    if profile.get("build_adapter") == "subvocal-swiftpm":
+        validate_subvocal_capabilities(info, profile)
+        for spec in nested_resource_bundles(profile):
+            if not (app_path / spec["path"]).is_dir():
+                fail(f"Required Subvocal resource bundle is missing: {spec['path']}")
     checks = {
         "CFBundleIdentifier": profile["bundle_identifier"],
         "CFBundleExecutable": profile["executable"],

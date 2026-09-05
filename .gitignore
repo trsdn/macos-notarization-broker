@@ -15,6 +15,9 @@ venv/
 # Local broker working files and downloaded artifacts
 /artifacts/
 /out/
+/.local-handoff/
+/.local-handoff-requests/
+*.identity
 *.dmg
 *.zip
 *.sha256

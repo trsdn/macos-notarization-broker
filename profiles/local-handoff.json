@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "profiles": ["subvocal", "subvocal-light"],
+  "staging_release": "local-handoffs",
+  "signing_recipient": "age14m3cv78emtnddst0cetw53vpys5vy5r0wzqapfa4u0kt7skqffesy80cg2"
+}
