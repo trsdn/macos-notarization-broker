@@ -11,6 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 WORKFLOW_DIR = ROOT / ".github" / "workflows"
 WORKFLOW = WORKFLOW_DIR / "notarize.yml"
+MIGRATION_WORKFLOW = WORKFLOW_DIR / "migrate-signing-secrets.yml"
 PINNED_ACTION = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}")
 PERMISSION_VALUE = re.compile(
     r"^\s+[a-z-]+:\s*(read|write|none|read-all|write-all)\s*$", re.MULTILINE
@@ -156,12 +157,111 @@ def validate_notarize_workflow() -> None:
         require(marker in workflow, f"authorization gate is missing: {marker}")
 
 
+def validate_migration_workflow(path: Path) -> None:
+    """One narrowly named, protected exception for sealed credential migration."""
+    label = path.name
+    workflow = path.read_text(encoding="utf-8")
+    require("\npermissions: {}\n" in workflow, f"{label}: top-level permissions must be empty")
+    for value in PERMISSION_VALUE.findall(workflow):
+        require(value in {"read", "none"}, f"{label}: migration may not grant write permissions")
+    trigger = workflow.split("\non:\n", 1)[1].split("\npermissions:", 1)[0]
+    require(
+        re.findall(r"^  ([A-Za-z_]+):", trigger, re.MULTILINE) == ["workflow_dispatch"],
+        f"{label}: migration must have only the manual dispatch trigger",
+    )
+    require(
+        not re.search(r"^\s*inputs:", trigger, re.MULTILINE),
+        f"{label}: migration must not accept caller-selected recipients or other inputs",
+    )
+    jobs = workflow.split("\njobs:\n", 1)[1]
+    require(
+        len(re.findall(r"^  [A-Za-z0-9_-]+:\s*$", jobs, re.MULTILINE)) == 1,
+        f"{label}: migration must have exactly one protected job",
+    )
+    require(
+        re.findall(r"^\s*environment:\s*(.+)$", workflow, re.MULTILINE) == ["macos-signing"],
+        f"{label}: migration requires the protected macos-signing environment",
+    )
+    require(
+        "\n    environment: macos-signing\n" in jobs,
+        f"{label}: the environment must protect the job",
+    )
+    require(
+        set(re.findall(r"secrets\.([A-Z0-9_]+)", workflow)) == WORKFLOW_SECRETS,
+        f"{label}: migration must reference exactly the five existing Apple secrets",
+    )
+    secret_reference = re.compile(r"\$\{\{[^}]*\bsecrets\.")
+    secret_lines = [line for line in workflow.splitlines() if secret_reference.search(line)]
+    for line in secret_lines:
+        require(
+            re.fullmatch(
+                r"          ([A-Z0-9_]+): \$\{\{ secrets\.\1 \}\}", line
+            ) is not None,
+            f"{label}: Apple secrets must be passed only through matching step env names",
+        )
+    secret_steps = [
+        step for step in re.split(r"^      - ", workflow, flags=re.MULTILINE)
+        if secret_reference.search(step)
+    ]
+    require(len(secret_steps) == 1, f"{label}: only the sealing step may reference secrets")
+    require(
+        "python3 scripts/migrate-signing-secrets.py" in secret_steps[0],
+        f"{label}: secrets may be consumed only by the broker migration script",
+    )
+    gate = re.search(r"^    if: >-\n((?:      .+\n)+)", jobs, re.MULTILINE)
+    expected_gate = (
+        "github.event_name == 'workflow_dispatch' && "
+        "github.ref == 'refs/heads/main' && "
+        "github.repository == 'trsdn/macos-notarization-broker' && "
+        "github.event.repository.id == 1315404585 && "
+        "github.actor_id == '24534196'"
+    )
+    require(
+        gate is not None and " ".join(gate.group(1).split()) == expected_gate,
+        f"{label}: job-level immutable owner/main authorization is missing",
+    )
+    require("persist-credentials: false" in workflow, f"{label}: checkout must not persist credentials")
+    require("ref: ${{ github.sha }}" in workflow, f"{label}: checkout must pin immutable broker code")
+    require(
+        not re.search(r"^\s*repository:", workflow, re.MULTILINE),
+        f"{label}: migration must not check out an external repository",
+    )
+    actions = re.findall(r"^\s*uses:\s*([^#\s]+)", workflow, re.MULTILINE)
+    require(
+        [action.split("@", 1)[0] for action in actions]
+        == ["actions/checkout", "actions/upload-artifact"],
+        f"{label}: migration must use exactly checkout then ciphertext upload",
+    )
+    require_pinned_actions(workflow, label)
+    require_no_expression_interpolation(workflow, label)
+    commands = re.findall(r"^        run: (.+)$", workflow, re.MULTILINE)
+    require(
+        commands == [
+            "sudo apt-get update -qq && sudo apt-get install -y -qq libsodium23",
+            "python3 scripts/migrate-signing-secrets.py",
+        ],
+        f"{label}: migration may execute only its reviewed library setup and sealing script",
+    )
+    require(
+        "        run: python3 scripts/migrate-signing-secrets.py" in secret_steps[0],
+        f"{label}: the secret-consuming step must execute only the sealing script",
+    )
+    require(
+        re.findall(r"^\s*path:\s*(.+)$", workflow, re.MULTILINE) == ["sealed-signing-secrets.json"]
+        and "\n          if-no-files-found: error\n" in workflow
+        and "\n          retention-days: 1\n" in workflow,
+        f"{label}: upload must select only sealed ciphertext with one-day retention",
+    )
+
+
 def main() -> int:
     paths = workflow_paths()
     require(WORKFLOW in paths, "notarization workflow is missing")
     validate_notarize_workflow()
     for path in paths:
-        if path != WORKFLOW:
+        if path == MIGRATION_WORKFLOW:
+            validate_migration_workflow(path)
+        elif path != WORKFLOW:
             validate_supporting_workflow(path)
 
     print("Static broker security validation passed.")
