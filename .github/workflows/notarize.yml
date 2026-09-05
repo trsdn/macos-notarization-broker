@@ -19,6 +19,8 @@ on:
           - printfilemanager
           - ptionsplus
           - spacemender
+          - subvocal
+          - subvocal-light
           - teleprompter
           - threemfquicklook
       tag:

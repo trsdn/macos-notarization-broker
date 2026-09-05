@@ -374,6 +374,60 @@
         }
       ]
     },
+    "subvocal": {
+      "repository": "trsdn/Subvocal",
+      "repository_id": 1197322196,
+      "source_visibility": "private",
+      "build_adapter": "subvocal-swiftpm",
+      "dependency_lock": "locks/subvocal-Package.resolved",
+      "bundle_name": "Subvocal.app",
+      "bundle_identifier": "com.subvocal.app",
+      "bundle_display_name": "Subvocal",
+      "executable": "Subvocal",
+      "package_type": "APPL",
+      "architectures": ["arm64"],
+      "minimum_system_version": "15.0",
+      "entitlements": "entitlements/subvocal.plist",
+      "nested_resource_bundles": [
+        {"path": "Contents/Resources/Subvocal_SubvocalKit.bundle"},
+        {"path": "Contents/Resources/PLCrashReporter_CrashReporter.bundle"}
+      ],
+      "dmg_volume_name": "Subvocal",
+      "max_archive_bytes": 268435456,
+      "max_uncompressed_bytes": 536870912,
+      "max_files": 2000,
+      "artifacts": [
+        {"type": "zip", "name": "Subvocal-v{version}-macOS-arm64.zip"},
+        {"type": "dmg", "name": "Subvocal.dmg"}
+      ]
+    },
+    "subvocal-light": {
+      "repository": "trsdn/Subvocal",
+      "repository_id": 1197322196,
+      "source_visibility": "private",
+      "build_adapter": "subvocal-swiftpm",
+      "dependency_lock": "locks/subvocal-Package.resolved",
+      "bundle_name": "Subvocal Light.app",
+      "bundle_identifier": "com.subvocal.light",
+      "bundle_display_name": "Subvocal Light",
+      "executable": "SubvocalLight",
+      "package_type": "APPL",
+      "architectures": ["arm64"],
+      "minimum_system_version": "15.0",
+      "entitlements": "entitlements/subvocal.plist",
+      "nested_resource_bundles": [
+        {"path": "Contents/Resources/Subvocal_SubvocalKit.bundle"},
+        {"path": "Contents/Resources/PLCrashReporter_CrashReporter.bundle"}
+      ],
+      "dmg_volume_name": "Subvocal Light",
+      "max_archive_bytes": 268435456,
+      "max_uncompressed_bytes": 536870912,
+      "max_files": 2000,
+      "artifacts": [
+        {"type": "zip", "name": "SubvocalLight-v{version}-macOS-arm64.zip"},
+        {"type": "dmg", "name": "SubvocalLight.dmg"}
+      ]
+    },
     "threemfquicklook": {
       "repository": "trsdn/threemf-quicklook",
       "repository_id": 1349836028,

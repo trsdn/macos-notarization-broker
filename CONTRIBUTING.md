@@ -57,9 +57,11 @@ A change is rejected if it weakens any of these, and
 - Application profiles stay declarative and allowlisted in
   `profiles/apps.json`; no shell fragments, hooks, secret names, or
   source-controlled entitlements.
-- Apple secrets exist only in the `macos-signing` environment and are referenced
-  only in the `sign` job. No other job or workflow may reference secrets or use
-  an environment.
+- Normal Apple secret use is confined to protected `sign` jobs. The encrypted
+  local workflow additionally uses its reviewed age identity only for
+  pre-signing decryption. The separately approved, one-time sealed migration
+  workflow is the only recovery exception; static validation treats both
+  workflows explicitly, never as blanket supporting-workflow exemptions.
 - Workflows declare `permissions: {}` at the top level and grant the minimum
   read-only scope per job.
 - Untrusted source repository code never runs in the privileged job.
