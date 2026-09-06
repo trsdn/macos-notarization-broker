@@ -203,6 +203,8 @@ def load_profiles() -> dict[str, Any]:
             fail(f"Profile {name} has an invalid Apple Team ID.")
         validate_nested_executable_policy(name, profile)
         validate_nested_resource_bundle_policy(name, profile)
+        if "required_resources" in profile:
+            validate_resource_file_policy(name, profile["required_resources"], bundle_relative=True)
         for artifact in profile["artifacts"]:
             if artifact.get("type") not in {"zip", "dmg"}:
                 fail(f"Profile {name} has an unsupported artifact type.")
@@ -314,6 +316,31 @@ def render_expected_value(template: str, profile: dict[str, Any], spec: dict[str
     return template
 
 
+def validate_resource_file_policy(
+    name: str, files: Any, *, bundle_relative: bool = False
+) -> None:
+    if not isinstance(files, dict) or not files:
+        fail(f"Profile {name} resource files must be a non-empty path-to-SHA-256 object.")
+    seen: set[str] = set()
+    for path, digest in files.items():
+        if (
+            not isinstance(path, str)
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]*(?:/[A-Za-z0-9][A-Za-z0-9._+-]*)*", path)
+            or (bundle_relative and not path.startswith("Contents/Resources/"))
+            or any(part.casefold().endswith(NESTED_BUNDLE_SUFFIXES) for part in Path(path).parts)
+        ):
+            fail(f"Profile {name} has an unsafe resource file path: {path!r}")
+        if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+            fail(f"Profile {name} resource file has an invalid SHA-256: {path}")
+        folded = path.casefold()
+        if any(
+            folded == previous or folded.startswith(previous + "/")
+            or previous.startswith(folded + "/") for previous in seen
+        ):
+            fail(f"Profile {name} has conflicting resource file paths: {path}")
+        seen.add(folded)
+
+
 def validate_nested_resource_bundle_policy(name: str, profile: dict[str, Any]) -> None:
     """Validate declarations of nested bundles that carry no code.
 
@@ -334,7 +361,7 @@ def validate_nested_resource_bundle_policy(name: str, profile: dict[str, Any]) -
     for spec in specs:
         if not isinstance(spec, dict):
             fail(f"Profile {name} has a nested resource bundle entry that is not an object.")
-        unknown = set(spec) - {"path"}
+        unknown = set(spec) - {"path", "files"}
         if unknown:
             fail(
                 f"Profile {name} nested resource bundle has unsupported fields: "
@@ -348,6 +375,36 @@ def validate_nested_resource_bundle_policy(name: str, profile: dict[str, Any]) -
         if path in seen:
             fail(f"Profile {name} declares a duplicate resource bundle path: {path}")
         seen.add(path)
+        if "files" in spec:
+            if not path.endswith(".bundle"):
+                fail(f"Profile {name} exact resource files require a .bundle path.")
+            validate_resource_file_policy(name, spec["files"])
+
+
+def validate_resource_files(root: Path, files: dict[str, str], *, exact: bool = False) -> None:
+    if root.is_symlink() or not root.is_dir():
+        fail("Required resource bundle is missing or unsafe.")
+    expected_files = {root / path for path in files}
+    actual_entries = set(root.rglob("*"))
+    expected_directories = {
+        parent for path in expected_files for parent in path.parents
+        if parent != root and root in parent.parents
+    }
+    if exact:
+        for path in actual_entries:
+            if path not in expected_files | expected_directories:
+                fail(f"Undeclared resource bundle entry: {path.relative_to(root)}")
+        for path in expected_directories:
+            if path.is_symlink() or not path.is_dir():
+                fail("Required resource directory is missing or unsafe.")
+    for relative, digest in files.items():
+        path = root / relative
+        if path not in actual_entries or path.is_symlink() or not path.is_file():
+            fail(f"Required resource file is missing or unsafe: {relative}")
+        if path.stat().st_mode & 0o111 or is_macho(path):
+            fail(f"Required resource file contains executable content: {relative}")
+        if sha256_file(path) != digest:
+            fail(f"Required resource file SHA-256 mismatch: {relative}")
 
 
 def validate_nested_executable_policy(name: str, profile: dict[str, Any]) -> None:
@@ -922,6 +979,10 @@ def assemble_subvocal(source: Path, work: Path, profile: dict[str, Any]) -> Path
         # Preserve links and permissions so preflight rejects unsafe content instead
         # of silently following links or normalizing executable resources.
         shutil.copytree(bundle, app / spec["path"], symlinks=True)
+    shutil.copy2(
+        ensure_source_file(package, ".build/checkouts/design-system/LICENSE"),
+        resources / "InstrumentWorkshopKit-LICENSE",
+    )
     make_resource_bundles_writable(app, profile)
     return app
 
@@ -939,6 +1000,12 @@ def make_resource_bundles_writable(app: Path, profile: dict[str, Any]) -> None:
             if not (stat.S_ISREG(mode) or stat.S_ISDIR(mode)):
                 fail("Resource bundles may not contain symlinks or special files.")
             path.chmod(stat.S_IMODE(mode) | stat.S_IWUSR)
+    for relative in profile.get("required_resources", {}):
+        path = app / relative
+        mode = path.lstat().st_mode
+        if not stat.S_ISREG(mode):
+            fail("Required resources may not be symlinks or special files.")
+        path.chmod(stat.S_IMODE(mode) | stat.S_IWUSR)
 
 
 def validate_subvocal_capabilities(info: dict[str, Any], profile: dict[str, Any]) -> None:
@@ -1674,6 +1741,12 @@ def validate_app_tree(
             fail(f"Unexpected executable file: {relative}")
         if path.name == "embedded.provisionprofile" or "_CodeSignature" in relative.parts:
             fail(f"Unsigned input contains signing material: {relative}")
+
+    for spec in nested_resource_bundles(profile):
+        if "files" in spec:
+            validate_resource_files(app_path / spec["path"], spec["files"], exact=True)
+    if "required_resources" in profile:
+        validate_resource_files(app_path, profile["required_resources"])
 
     architectures = validate_executable_image(
         main_executable, profile, "Application main executable"

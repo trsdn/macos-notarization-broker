@@ -163,9 +163,21 @@ Subvocal's two profiles intentionally omit the restricted shared-keychain
 entitlement and any provisioning profile. Their independent preflight rejects
 the Info.plist capability marker that would advertise protected artifacts.
 The broker uses its own microphone-only entitlements, never source entitlements.
-The two exact resource bundle declarations authorize data only; symlinks,
+The three exact resource bundle declarations authorize data only; symlinks,
 additional nested bundles, executable resources, and Mach-O resources retain
 the existing rejection rules.
+
+InstrumentWorkshopKit 1.5.1 is pinned at
+`9f58bdba169bc0013dd8b9ec80b85f65325ac678`, preserving the other dependency pins.
+Its resource declaration additionally uses `files`, a non-empty map of exact
+bundle-relative file paths to SHA-256 digests. Preflight requires those regular
+non-executable files and only their parent directories; it rejects extra entries,
+including `Info.plist`, rather than inventing metadata for a data-only SwiftPM
+bundle. `required_resources` separately pins the exact app-relative license path
+and digest under `Contents/Resources`. These declarations confer no permission to
+execute or sign nested code. The existing full-tree digest also binds these bytes
+through repeated pre-signing validation and artifact verification. Existing
+resource declarations without `files` retain their prior behavior.
 
 ### Encrypted owner-attested handoff
 

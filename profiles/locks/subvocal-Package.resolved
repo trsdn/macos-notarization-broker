@@ -1,6 +1,15 @@
 {
-  "originHash" : "a17d71bfb0f963929090d4872f3142b42d17313950e427975e2cc5206b0a4606",
+  "originHash" : "b16644131bf43d45dd9e83a11d23b1fcd49c371d91dfb366910261bd81af54a8",
   "pins" : [
+    {
+      "identity" : "design-system",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/trsdn/design-system.git",
+      "state" : {
+        "revision" : "9f58bdba169bc0013dd8b9ec80b85f65325ac678",
+        "version" : "1.5.1"
+      }
+    },
     {
       "identity" : "fluidaudio",
       "kind" : "remoteSourceControl",

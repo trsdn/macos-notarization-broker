@@ -390,8 +390,17 @@
       "entitlements": "entitlements/subvocal.plist",
       "nested_resource_bundles": [
         {"path": "Contents/Resources/Subvocal_SubvocalKit.bundle"},
-        {"path": "Contents/Resources/PLCrashReporter_CrashReporter.bundle"}
+        {"path": "Contents/Resources/PLCrashReporter_CrashReporter.bundle"},
+        {
+          "path": "Contents/Resources/InstrumentWorkshopKit_InstrumentWorkshopKit.bundle",
+          "files": {
+            "Resources/canonical-workflow-fixture.json": "d3782ac0233704ad160454416185575a25d74628ce6e08f7487c56de3af36ba6"
+          }
+        }
       ],
+      "required_resources": {
+        "Contents/Resources/InstrumentWorkshopKit-LICENSE": "2b6e3161ac8b73259d7c38af85df4b92fa518fc7f86dd1048db056933f3f60a3"
+      },
       "dmg_volume_name": "Subvocal",
       "max_archive_bytes": 268435456,
       "max_uncompressed_bytes": 536870912,
@@ -417,8 +426,17 @@
       "entitlements": "entitlements/subvocal.plist",
       "nested_resource_bundles": [
         {"path": "Contents/Resources/Subvocal_SubvocalKit.bundle"},
-        {"path": "Contents/Resources/PLCrashReporter_CrashReporter.bundle"}
+        {"path": "Contents/Resources/PLCrashReporter_CrashReporter.bundle"},
+        {
+          "path": "Contents/Resources/InstrumentWorkshopKit_InstrumentWorkshopKit.bundle",
+          "files": {
+            "Resources/canonical-workflow-fixture.json": "d3782ac0233704ad160454416185575a25d74628ce6e08f7487c56de3af36ba6"
+          }
+        }
       ],
+      "required_resources": {
+        "Contents/Resources/InstrumentWorkshopKit-LICENSE": "2b6e3161ac8b73259d7c38af85df4b92fa518fc7f86dd1048db056933f3f60a3"
+      },
       "dmg_volume_name": "Subvocal Light",
       "max_archive_bytes": 268435456,
       "max_uncompressed_bytes": 536870912,

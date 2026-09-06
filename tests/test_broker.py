@@ -864,6 +864,69 @@ class NestedBundleValidationTests(BundleFixtureMixin, unittest.TestCase):
         result = self.validate(self.app, self.profile)
         self.assertEqual(len(result["nested_executables"]), 1)
 
+    def test_exact_resource_bundle_requires_only_pinned_data_without_plist(self) -> None:
+        bundle = self.app / "Contents/Resources/Dep_Dep.bundle"
+        bundle.mkdir()
+        data = bundle / "Resources/fixture.json"
+        data.parent.mkdir()
+        data.write_text("{}")
+        self.profile["nested_resource_bundles"] = [{
+            "path": "Contents/Resources/Dep_Dep.bundle",
+            "files": {"Resources/fixture.json": broker.sha256_file(data)},
+        }]
+        broker.validate_nested_resource_bundle_policy("test", self.profile)
+        self.validate(self.app, self.profile)
+        (bundle / "Info.plist").write_text("{}")
+        with self.assertRaisesRegex(broker.BrokerError, "Undeclared resource bundle entry"):
+            self.validate(self.app, self.profile)
+
+    def test_resource_file_policy_rejects_invalid_paths_and_digests(self) -> None:
+        digest = "a" * 64
+        invalid = [
+            None, [], {}, {"file": None}, {"file": "tag"}, {"file": "A" * 64},
+            {"../file": digest}, {"/file": digest}, {"a/../file": digest},
+            {"./file": digest}, {"a//file": digest}, {"file/": digest},
+            {"*.json": digest}, {"a\\file": digest}, {"a.bundle/file": digest},
+            {"a.FRAMEWORK/file": digest}, {"file": digest, "FILE": digest},
+            {"a": digest, "a/file": digest}, {"a/file": digest, "a": digest},
+        ]
+        for files in invalid:
+            with self.subTest(files=files), self.assertRaises(broker.BrokerError):
+                broker.validate_resource_file_policy("test", files)
+        for path in ("Resources/LICENSE", "Contents/MacOS/LICENSE", "Contents/Resources"):
+            with self.subTest(path=path), self.assertRaises(broker.BrokerError):
+                broker.validate_resource_file_policy("test", {path: digest}, bundle_relative=True)
+        broker.validate_resource_file_policy(
+            "test", {"Contents/Resources/LICENSE": digest}, bundle_relative=True
+        )
+
+    def test_resource_bundle_file_schema_rejects_unknown_fields_and_non_bundle(self) -> None:
+        for spec in (
+            {"path": "Contents/Resources/Dep.bundle", "files": {}},
+            {"path": "Contents/Resources/Dep.bundle", "files": None},
+            {"path": "Contents/Resources/Dep.bundle", "allow_anything": True},
+            {"path": "Contents/Resources/Dep.app", "files": {"file": "a" * 64}},
+        ):
+            with self.subTest(spec=spec), self.assertRaises(broker.BrokerError):
+                broker.validate_nested_resource_bundle_policy(
+                    "test", {"nested_resource_bundles": [spec]}
+                )
+
+    def test_resource_policy_is_validated_when_profiles_load(self) -> None:
+        document = json.loads(broker.PROFILE_FILE.read_text())
+        for field, value in (
+            ("required_resources", {"Contents/Resources/LICENSE": "not-a-digest"}),
+            ("nested_resource_bundles", [{"path": "Contents/Resources/Dep.bundle", "files": []}]),
+        ):
+            with self.subTest(field=field):
+                changed = json.loads(json.dumps(document))
+                changed["profiles"]["subvocal"][field] = value
+                path = self.root / "profiles.json"
+                path.write_text(json.dumps(changed))
+                with mock.patch.object(broker, "PROFILE_FILE", path):
+                    with self.assertRaises(broker.BrokerError):
+                        broker.load_profiles()
+
     def test_declared_resource_bundle_may_not_contain_macho(self) -> None:
         bundle = self._add_resource_bundle("Dep_Dep.bundle")
         (bundle / "sneaky").write_bytes(self.ARM64_MACHO)
