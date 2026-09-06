@@ -21,7 +21,7 @@ class SubvocalTests(unittest.TestCase):
 
     def fixture(self, name: str = "subvocal") -> tuple[Path, Path, dict, Path]:
         profile = broker.get_profile(name)
-        source = self.root / name / "source"
+        source = Path(tempfile.mkdtemp(dir=self.root)) / name / "source"
         package = source / "Subvocal"
         package.mkdir(parents=True)
         (package / "Package.swift").write_text("// fixture")
@@ -53,8 +53,22 @@ class SubvocalTests(unittest.TestCase):
         for spec in broker.nested_resource_bundles(profile):
             bundle = binary.parent / Path(spec["path"]).name
             bundle.mkdir()
-            (bundle / "Info.plist").write_bytes(plistlib.dumps({"CFBundlePackageType": "BNDL"}))
-            (bundle / "data.json").write_text("{}")
+            if "files" in spec:
+                for relative in spec["files"]:
+                    resource = bundle / relative
+                    resource.parent.mkdir(parents=True, exist_ok=True)
+                    resource.write_bytes(b'{"fixture":true}\n')
+                    spec["files"][relative] = broker.sha256_file(resource)
+            else:
+                (bundle / "Info.plist").write_bytes(plistlib.dumps({"CFBundlePackageType": "BNDL"}))
+                (bundle / "data.json").write_text("{}")
+        license_path = package / ".build/checkouts/design-system/LICENSE"
+        license_path.parent.mkdir(parents=True)
+        license_path.write_bytes(b"synthetic license fixture\n")
+        license_path.chmod(0o444)
+        profile["required_resources"]["Contents/Resources/InstrumentWorkshopKit-LICENSE"] = (
+            broker.sha256_file(license_path)
+        )
         work = source.parent / "work"
         work.mkdir()
         return source, work, profile, binary
@@ -95,7 +109,14 @@ class SubvocalTests(unittest.TestCase):
     def test_dependency_contract_pins_every_revision(self) -> None:
         profile = broker.get_profile("subvocal")
         lock = json.loads(broker.safe_profile_path(profile["dependency_lock"]).read_text())
-        self.assertEqual(len(lock["pins"]), 6)
+        self.assertEqual(len(lock["pins"]), 7)
+        kit = next(pin for pin in lock["pins"] if pin["identity"] == "design-system")
+        self.assertEqual(kit, {
+            "identity": "design-system",
+            "kind": "remoteSourceControl",
+            "location": "https://github.com/trsdn/design-system.git",
+            "state": {"revision": "9f58bdba169bc0013dd8b9ec80b85f65325ac678", "version": "1.5.1"},
+        })
         for pin in lock["pins"]:
             self.assertRegex(pin["state"]["revision"], r"^[0-9a-f]{40}$")
             self.assertTrue(pin["location"].startswith("https://github.com/"))
@@ -111,6 +132,17 @@ class SubvocalTests(unittest.TestCase):
                 self.assertEqual(self.validate(app, profile)["bundle_version"], "2.0.0")
                 self.assertEqual((app / "Contents/PkgInfo").read_bytes(), b"APPL????")
                 self.assertEqual((app / "Contents/Resources/AppIcon.icns").read_bytes(), b"icon")
+                kit = app / "Contents/Resources/InstrumentWorkshopKit_InstrumentWorkshopKit.bundle"
+                self.assertFalse((kit / "Info.plist").exists())
+                self.assertEqual(
+                    (kit / "Resources/canonical-workflow-fixture.json").read_bytes(),
+                    b'{"fixture":true}\n',
+                )
+                license_path = app / "Contents/Resources/InstrumentWorkshopKit-LICENSE"
+                self.assertEqual(license_path.read_bytes(), b"synthetic license fixture\n")
+                self.assertEqual(license_path.stat().st_mode & 0o777, 0o644)
+                original = source / "Subvocal/.build/checkouts/design-system/LICENSE"
+                self.assertEqual(original.stat().st_mode & 0o777, 0o444)
 
     def test_lock_mismatch_fails_before_compilation(self) -> None:
         source, work, profile, binary = self.fixture()
@@ -166,13 +198,105 @@ class SubvocalTests(unittest.TestCase):
         with self.assertRaisesRegex(broker.BrokerError, "protected artifact"):
             self.validate(app, profile)
 
-    def test_preflight_requires_both_resource_bundles(self) -> None:
+    def test_preflight_requires_existing_resource_bundles(self) -> None:
         source, work, profile, binary = self.fixture()
         with mock.patch.object(broker, "swift_build", return_value=binary):
             app = broker.assemble_subvocal(source, work, profile)
         shutil.rmtree(app / "Contents/Resources/PLCrashReporter_CrashReporter.bundle")
         with self.assertRaisesRegex(broker.BrokerError, "resource bundle is missing"):
             self.validate(app, profile)
+
+    def test_both_profiles_pin_exact_kit_resources(self) -> None:
+        for name in ("subvocal", "subvocal-light"):
+            profile = broker.get_profile(name)
+            self.assertEqual(profile["nested_resource_bundles"][-1], {
+                "path": "Contents/Resources/InstrumentWorkshopKit_InstrumentWorkshopKit.bundle",
+                "files": {
+                    "Resources/canonical-workflow-fixture.json":
+                        "d3782ac0233704ad160454416185575a25d74628ce6e08f7487c56de3af36ba6",
+                },
+            })
+            self.assertEqual(profile["required_resources"], {
+                "Contents/Resources/InstrumentWorkshopKit-LICENSE":
+                    "2b6e3161ac8b73259d7c38af85df4b92fa518fc7f86dd1048db056933f3f60a3",
+            })
+
+    def test_kit_resource_mutations_fail_closed_for_both_flavors(self) -> None:
+        cases = (
+            "missing-bundle", "bundle-file", "missing-json", "malformed-json",
+            "changed-json", "json-directory", "extra-file", "extra-directory",
+            "info-plist", "nested-bundle", "macho", "executable", "file-link",
+            "directory-link", "bundle-link", "miscased-file",
+            "missing-license", "changed-license", "license-directory", "license-link",
+            "license-executable", "license-macho", "miscased-license",
+        )
+        for name in ("subvocal", "subvocal-light"):
+            for case in cases:
+                with self.subTest(name=name, case=case):
+                    source, work, profile, binary = self.fixture(name)
+                    with mock.patch.object(broker, "swift_build", return_value=binary):
+                        app = broker.assemble_subvocal(source, work, profile)
+                    kit = app / profile["nested_resource_bundles"][-1]["path"]
+                    data = kit / "Resources/canonical-workflow-fixture.json"
+                    license_path = app / "Contents/Resources/InstrumentWorkshopKit-LICENSE"
+                    if case in {"missing-bundle", "bundle-file", "bundle-link"}:
+                        shutil.rmtree(kit)
+                        if case == "bundle-file":
+                            kit.write_text("not a bundle")
+                        elif case == "bundle-link":
+                            kit.symlink_to(binary.parent / kit.name, target_is_directory=True)
+                    elif case == "missing-json":
+                        data.unlink()
+                    elif case == "malformed-json":
+                        data.write_text("{")
+                    elif case == "changed-json":
+                        data.write_text('{"fixture":false}')
+                    elif case == "json-directory":
+                        data.unlink()
+                        data.mkdir()
+                    elif case in {"extra-file", "info-plist"}:
+                        (kit / ("Info.plist" if case == "info-plist" else "extra.txt")).write_text("{}")
+                    elif case in {"extra-directory", "nested-bundle"}:
+                        (kit / ("Hidden.bundle" if case == "nested-bundle" else "extra")).mkdir()
+                    elif case == "macho":
+                        data.write_bytes(BundleFixtureMixin.ARM64_MACHO)
+                    elif case == "executable":
+                        data.chmod(0o755)
+                    elif case == "file-link":
+                        data.unlink()
+                        data.symlink_to(license_path)
+                    elif case == "directory-link":
+                        shutil.rmtree(kit / "Resources")
+                        (kit / "Resources").symlink_to(binary.parent / kit.name / "Resources")
+                    elif case == "miscased-file":
+                        data.rename(data.with_name("Canonical-workflow-fixture.json"))
+                    elif case == "missing-license":
+                        license_path.unlink()
+                    elif case == "changed-license":
+                        license_path.write_text("changed")
+                    elif case == "license-directory":
+                        license_path.unlink()
+                        license_path.mkdir()
+                    elif case == "license-link":
+                        license_path.unlink()
+                        license_path.symlink_to(data)
+                    elif case == "license-executable":
+                        license_path.chmod(0o755)
+                    elif case == "license-macho":
+                        license_path.write_bytes(BundleFixtureMixin.ARM64_MACHO)
+                    elif case == "miscased-license":
+                        license_path.rename(license_path.with_name("instrumentWorkshopKit-LICENSE"))
+                    else:
+                        self.fail(case)
+                    with self.assertRaises(broker.BrokerError):
+                        self.validate(app, profile)
+
+    def test_missing_kit_license_is_rejected_by_adapter(self) -> None:
+        source, work, profile, binary = self.fixture()
+        (source / "Subvocal/.build/checkouts/design-system/LICENSE").unlink()
+        with mock.patch.object(broker, "swift_build", return_value=binary):
+            with self.assertRaises(broker.BrokerError):
+                broker.assemble_subvocal(source, work, profile)
 
     def test_preflight_still_rejects_code_inside_declared_resources(self) -> None:
         source, work, profile, binary = self.fixture()
