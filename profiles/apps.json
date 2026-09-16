@@ -270,6 +270,11 @@
         {
           "type": "dmg",
           "name": "OpenLens-v{version}-macOS-arm64.dmg"
+        },
+        {
+          "type": "dmg",
+          "name": "OpenLens-{version}.dmg",
+          "copy_of": "OpenLens-v{version}-macOS-arm64.dmg"
         }
       ]
     },

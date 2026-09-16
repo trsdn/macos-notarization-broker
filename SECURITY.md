@@ -143,6 +143,15 @@ runner with no access to repository secrets or the `GITHUB_TOKEN` write scopes.
 - The privileged job repeats archive and tree validation before importing the
   certificate, and re-verifies every digest the preflight manifest recorded.
 - Final provenance records the source commit and release-file SHA-256 values.
+- An artifact declared with `copy_of` is copied from the already verified
+  original inside the signing job, and the copy's digest is checked against the
+  original's before provenance records it. No second disk image is built or
+  notarized.
+- `request.sh --publish` runs on the operator's machine with the operator's
+  `gh` credentials, after digest verification. It uploads only the files named
+  in `provenance.json`, plus the provenance and preflight manifest. The
+  workflow's permissions are unchanged: it still cannot write to any source
+  repository.
 
 ## Profile review requirements
 

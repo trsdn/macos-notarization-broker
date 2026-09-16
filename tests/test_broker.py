@@ -162,6 +162,50 @@ class ProfileTests(unittest.TestCase):
             ],
         )
 
+    def test_openlens_publishes_the_name_appupdater_looks_for(self) -> None:
+        # AppUpdater only accepts "<repository>-<semver>.dmg". Without this copy,
+        # installed apps never see the release.
+        artifacts = broker.get_profile("openlens")["artifacts"]
+        self.assertIn(
+            {
+                "type": "dmg",
+                "name": "OpenLens-{version}.dmg",
+                "copy_of": "OpenLens-v{version}-macOS-arm64.dmg",
+            },
+            artifacts,
+        )
+
+    def test_artifact_copy_must_follow_an_original_of_the_same_type(self) -> None:
+        dmg = {"type": "dmg", "name": "App-v{version}.dmg"}
+        zip_ = {"type": "zip", "name": "App-v{version}.zip"}
+        broker.validate_artifact_policy(
+            "demo", [dmg, {"type": "dmg", "name": "App-{version}.dmg", "copy_of": dmg["name"]}]
+        )
+        rejected = {
+            "copy before its original": [
+                {"type": "dmg", "name": "App-{version}.dmg", "copy_of": dmg["name"]},
+                dmg,
+            ],
+            "copy of a different type": [
+                zip_,
+                {"type": "dmg", "name": "App-{version}.dmg", "copy_of": zip_["name"]},
+            ],
+            "copy of nothing": [
+                dmg,
+                {"type": "dmg", "name": "App-{version}.dmg", "copy_of": "Other.dmg"},
+            ],
+            "duplicate name": [dmg, dict(dmg)],
+            "case-only duplicate": [dmg, {"type": "dmg", "name": "app-v{version}.DMG"}],
+            "name not matching type": [{"type": "dmg", "name": "App-{version}.zip"}],
+            "unknown field": [dict(dmg, sign=False)],
+            "path traversal": [{"type": "dmg", "name": "../App-{version}.dmg"}],
+            "empty list": [],
+        }
+        for label, artifacts in rejected.items():
+            with self.subTest(label):
+                with self.assertRaises(broker.BrokerError):
+                    broker.validate_artifact_policy("demo", artifacts)
+
     def test_profiles_shipping_nested_code_are_declared(self) -> None:
         # spacemender ships a privileged XPC helper; openconnct ships a CoreAudio
         # HAL plug-in; openlens ships a camera system extension; better-kampfinsel
