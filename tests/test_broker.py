@@ -166,6 +166,7 @@ class ProfileTests(unittest.TestCase):
             [
                 "OpenConnct-v{version}-macOS-universal.zip",
                 "OpenConnct-v{version}-macOS-universal.dmg",
+                "OpenConnct-{version}.dmg",
             ],
         )
         self.assertEqual(
@@ -1654,6 +1655,10 @@ class BuildAdapterTests(unittest.TestCase):
             source = Path(temporary) / "source"
             source.mkdir(parents=True)
             (source / "Makefile").write_text("build:\n\ttrue\n", encoding="utf-8")
+            (source / "Update").mkdir()
+            (source / "Update" / "Package.resolved").write_bytes(
+                broker.safe_profile_path(profile["dependency_lock"]).read_bytes()
+            )
             work = Path(temporary) / "work"
             work.mkdir()
             app = work / "dist" / profile["bundle_name"] / "Contents"
@@ -1669,14 +1674,33 @@ class BuildAdapterTests(unittest.TestCase):
             with (built / "Contents" / "Info.plist").open("rb") as handle:
                 stamped = plistlib.load(handle)
 
-        self.assertEqual(len(calls), 1, "the build must be a single make invocation")
-        command = calls[0]
+        self.assertEqual(len(calls), 2, "a strict package resolve, then a single make")
+        resolve, command = calls
+        self.assertEqual(resolve[:2], ["swift", "package"])
+        self.assertIn("--only-use-versions-from-resolved-file", resolve)
+        self.assertEqual(resolve[-1], "resolve")
         self.assertEqual(command[0], "make")
         self.assertIn("embed-driver", command)
         self.assertIn("UNIVERSAL=1", command)
         self.assertTrue(any(part.startswith("DIST_DIR=") for part in command))
         self.assertEqual(stamped["CFBundleShortVersionString"], "1.2.3")
         self.assertEqual(stamped["CFBundleVersion"], "42")
+
+    def test_openconnct_build_rejects_an_unreviewed_update_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "source"
+            (source / "Update").mkdir(parents=True)
+            (source / "Makefile").write_text("build:\n\ttrue\n", encoding="utf-8")
+            (source / "Update" / "Package.resolved").write_text(
+                '{"pins": [], "version": 3}', encoding="utf-8"
+            )
+            work = Path(temporary) / "work"
+            work.mkdir()
+            with mock.patch.object(broker, "run", side_effect=AssertionError("must not build")):
+                with self.assertRaises(broker.BrokerError):
+                    broker.build_openconnct(
+                        source, work, broker.get_profile("openconnct"), "1.2.3", "42"
+                    )
 
     def test_openconnct_build_requires_the_committed_makefile(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

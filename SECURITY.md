@@ -197,6 +197,16 @@ The `opendefendrwatchr` and `openzombr` profiles share the
 
 Both profiles use empty broker-owned entitlements.
 
+The `openconnct` profile builds AppUpdater from the source's `Update/` SwiftPM
+package through the committed Makefile. Before `make` runs, the build step:
+
+- requires `Update/Package.resolved` to equal `locks/openconnct-Package.resolved`;
+- resolves the packages with `--only-use-versions-from-resolved-file`, so the
+  Makefile's `swift build` uses exactly those checkouts.
+
+It compares the lock again after the build. AppUpdater is linked in as object
+files, so the app contains no nested resource bundle.
+
 InstrumentWorkshopKit 1.5.1 is pinned at
 `9f58bdba169bc0013dd8b9ec80b85f65325ac678`, preserving the other dependency pins.
 Its resource declaration additionally uses `files`, a non-empty map of exact

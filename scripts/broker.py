@@ -1224,8 +1224,29 @@ def build_openconnct(
     # .xcodeproj. `make` and the compilers it invokes (clang, swiftc, libtool, lipo)
     # all ship with the runner's Xcode; nothing is generated, fetched, or installed,
     # which keeps the untrusted build job on preinstalled tooling only.
-    require_tools(["make"])
+    #
+    # The one exception is AppUpdater, which the Makefile builds from the Update/
+    # SwiftPM package. Its Package.resolved has to equal the reviewed broker lock,
+    # and the packages are resolved strictly from it before make runs, so the
+    # Makefile's own `swift build` finds them already checked out at those
+    # revisions. The lock is compared again afterwards in case the build moved it.
+    require_tools(["make", "swift"])
     ensure_source_file(source, "Makefile")
+    update_package = source / "Update"
+    lock = ensure_source_file(update_package, "Package.resolved")
+    expected_lock = safe_profile_path(profile["dependency_lock"])
+    if json.loads(lock.read_text()) != json.loads(expected_lock.read_text()):
+        fail("OpenConnct Update/Package.resolved differs from the reviewed broker dependency lock.")
+    run(
+        [
+            "swift",
+            "package",
+            "--package-path",
+            str(update_package),
+            "--only-use-versions-from-resolved-file",
+            "resolve",
+        ]
+    )
     dist = work / "dist"
     # UNIVERSAL=1 builds both the arm64 and x86_64 slices — a system audio driver has
     # to load on Intel Macs too — and embed-driver copies the built .driver into the
@@ -1234,6 +1255,8 @@ def build_openconnct(
     # signing step finds no identity and leaves the bundle unsigned; that is exactly the
     # linker-signed input preflight requires, and the broker owns all real signing.
     run(["make", "embed-driver", "UNIVERSAL=1", f"DIST_DIR={dist}"], cwd=source)
+    if json.loads(lock.read_text()) != json.loads(expected_lock.read_text()):
+        fail("OpenConnct dependency lock changed during compilation.")
     app = dist / profile["bundle_name"]
     stamp_bundle_version(app, version, build_number)
     return app
