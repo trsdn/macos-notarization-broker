@@ -205,12 +205,7 @@ def load_profiles() -> dict[str, Any]:
         validate_nested_resource_bundle_policy(name, profile)
         if "required_resources" in profile:
             validate_resource_file_policy(name, profile["required_resources"], bundle_relative=True)
-        for artifact in profile["artifacts"]:
-            if artifact.get("type") not in {"zip", "dmg"}:
-                fail(f"Profile {name} has an unsupported artifact type.")
-            rendered = artifact.get("name", "").replace("{version}", "1.2.3")
-            if not rendered or Path(rendered).name != rendered:
-                fail(f"Profile {name} has an unsafe artifact name.")
+        validate_artifact_policy(name, profile["artifacts"])
     return profiles
 
 
@@ -339,6 +334,43 @@ def validate_resource_file_policy(
         ):
             fail(f"Profile {name} has conflicting resource file paths: {path}")
         seen.add(folded)
+
+
+def validate_artifact_policy(name: str, artifacts: Any) -> None:
+    """Validate the release files a profile produces.
+
+    An artifact with `copy_of` is a byte-identical copy of an earlier artifact of the same type,
+    published under a second name. In-app updaters such as AppUpdater accept only one exact
+    asset name, and producing that name as a copy keeps it covered by provenance without
+    notarizing a second disk image.
+    """
+    if not isinstance(artifacts, list) or not artifacts:
+        fail(f"Profile {name} must declare at least one artifact.")
+    produced: dict[str, str] = {}
+    for artifact in artifacts:
+        if not isinstance(artifact, dict):
+            fail(f"Profile {name} has an artifact entry that is not an object.")
+        unknown = set(artifact) - {"type", "name", "copy_of"}
+        if unknown:
+            fail(f"Profile {name} artifact has unsupported fields: {', '.join(sorted(unknown))}")
+        if artifact.get("type") not in {"zip", "dmg"}:
+            fail(f"Profile {name} has an unsupported artifact type.")
+        template = artifact.get("name")
+        rendered = template.replace("{version}", "1.2.3") if isinstance(template, str) else ""
+        if not rendered or Path(rendered).name != rendered:
+            fail(f"Profile {name} has an unsafe artifact name.")
+        if not rendered.endswith(f".{artifact['type']}"):
+            fail(f"Profile {name} artifact name does not match its type: {template}")
+        if template in produced or template.casefold() in {t.casefold() for t in produced}:
+            fail(f"Profile {name} declares a duplicate artifact name: {template}")
+        if "copy_of" in artifact:
+            source = artifact["copy_of"]
+            if produced.get(source) != artifact["type"]:
+                fail(
+                    f"Profile {name} artifact {template} must copy an earlier artifact "
+                    f"of the same type."
+                )
+        produced[template] = artifact["type"]
 
 
 def validate_nested_resource_bundle_policy(name: str, profile: dict[str, Any]) -> None:
@@ -1051,15 +1083,38 @@ def build_openlens(
     # image, so the project is committed and this adapter drives it directly. The
     # scheme builds the app and its camera system extension and embeds the latter
     # under Contents/Library/SystemExtensions; preflight pins that path.
+    #
+    # The app links AppUpdater through SwiftPM. As for md2loop, the reviewed
+    # broker lock replaces the source's Package.resolved, so the source cannot
+    # move a dependency to an unreviewed revision.
     ensure_source_file(source, "OpenLens.xcodeproj/project.pbxproj")
+    lock = safe_profile_path(profile["dependency_lock"])
+    workspace_lock = (
+        source
+        / "OpenLens.xcodeproj"
+        / "project.xcworkspace"
+        / "xcshareddata"
+        / "swiftpm"
+        / "Package.resolved"
+    )
+    workspace_lock.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(lock, workspace_lock)
     derived_data = work / "DerivedData"
+    packages = work / "SourcePackages"
+    common = [
+        "xcodebuild",
+        "-project",
+        "OpenLens.xcodeproj",
+        "-scheme",
+        "OpenLens",
+        "-clonedSourcePackagesDirPath",
+        str(packages),
+        "-onlyUsePackageVersionsFromResolvedFile",
+    ]
+    run(common + ["-resolvePackageDependencies"], cwd=source)
     run(
-        [
-            "xcodebuild",
-            "-project",
-            "OpenLens.xcodeproj",
-            "-scheme",
-            "OpenLens",
+        common
+        + [
             "-configuration",
             "Release",
             "-derivedDataPath",
@@ -2570,7 +2625,12 @@ def command_sign(args: argparse.Namespace) -> None:
             for artifact in profile["artifacts"]:
                 name = artifact["name"].format(version=version)
                 destination = output_dir / name
-                if artifact["type"] == "zip":
+                if "copy_of" in artifact:
+                    original = output_dir / artifact["copy_of"].format(version=version)
+                    shutil.copy2(original, destination)
+                    if sha256_file(destination) != sha256_file(original):
+                        fail(f"Release file copy differs from its original: {name}")
+                elif artifact["type"] == "zip":
                     create_and_verify_zip(app_path, destination, profile)
                 else:
                     create_and_verify_dmg(

@@ -3,14 +3,26 @@ set -euo pipefail
 
 repo="${BROKER_REPOSITORY:-trsdn/macos-notarization-broker}"
 ref="${BROKER_REF:-main}"
-app="${1:-}"
-tag="${2:-}"
-output="${3:-broker-artifacts}"
+# --publish uploads the verified files to the source repository's GitHub
+# release, creating the release from the tag if it does not exist yet. It uses
+# the caller's gh credentials; the broker workflow itself never writes to a
+# source repository.
+publish=0
+positional=()
+for argument in "$@"; do
+  case "$argument" in
+    --publish) publish=1 ;;
+    *) positional+=("$argument") ;;
+  esac
+done
+app="${positional[0]:-}"
+tag="${positional[1]:-}"
+output="${positional[2]:-broker-artifacts}"
 
 case "$app" in
   better-kampfinsel|md2loop|openconnct|opendefendrwatchr|openlens|openswitchr|openwritr|printfilemanager|ptionsplus|spacemender|subvocal|subvocal-light|teleprompter|threemfquicklook) ;;
   *)
-    echo "Usage: $0 {better-kampfinsel|md2loop|openconnct|opendefendrwatchr|openlens|openswitchr|openwritr|printfilemanager|ptionsplus|spacemender|subvocal|subvocal-light|teleprompter|threemfquicklook} vX.Y.Z [output-directory]" >&2
+    echo "Usage: $0 {better-kampfinsel|md2loop|openconnct|opendefendrwatchr|openlens|openswitchr|openwritr|printfilemanager|ptionsplus|spacemender|subvocal|subvocal-light|teleprompter|threemfquicklook} vX.Y.Z [output-directory] [--publish]" >&2
     exit 1
     ;;
 esac
@@ -122,3 +134,43 @@ print(f"Verified source commit {source['commit_sha']}")
 PY
 
 echo "Downloaded and verified notarized artifacts in $destination."
+
+[[ "$publish" == 1 ]] || exit 0
+
+# Publish exactly what provenance lists, plus the provenance itself, so a
+# stray file in the download directory can never reach the release.
+source_repository="$(
+  python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["source"]["repository"])' \
+    "$destination/provenance.json"
+)"
+release_files=()
+while IFS= read -r name; do
+  release_files+=("$destination/$name")
+done < <(
+  python3 - "$destination/provenance.json" <<'PY'
+import json
+import sys
+
+provenance = json.load(open(sys.argv[1], encoding="utf-8"))
+for artifact in provenance["artifacts"]:
+    print(artifact["name"])
+    print(artifact["checksum"])
+print("provenance.json")
+print("preflight-manifest.json")
+PY
+)
+for file in "${release_files[@]}"; do
+  [[ -f "$file" && ! -L "$file" ]] || {
+    echo "Release file is missing or unsafe: $file" >&2
+    exit 1
+  }
+done
+
+if ! gh release view "$tag" --repo "$source_repository" >/dev/null 2>&1; then
+  gh release create "$tag" \
+    --repo "$source_repository" \
+    --verify-tag \
+    --notes-from-tag
+fi
+gh release upload "$tag" "${release_files[@]}" --repo "$source_repository" --clobber
+echo "Published ${#release_files[@]} files to https://github.com/$source_repository/releases/tag/$tag"

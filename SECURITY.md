@@ -143,6 +143,15 @@ runner with no access to repository secrets or the `GITHUB_TOKEN` write scopes.
 - The privileged job repeats archive and tree validation before importing the
   certificate, and re-verifies every digest the preflight manifest recorded.
 - Final provenance records the source commit and release-file SHA-256 values.
+- An artifact declared with `copy_of` is copied from the already verified
+  original inside the signing job, and the copy's digest is checked against the
+  original's before provenance records it. No second disk image is built or
+  notarized.
+- `request.sh --publish` runs on the operator's machine with the operator's
+  `gh` credentials, after digest verification. It uploads only the files named
+  in `provenance.json`, plus the provenance and preflight manifest. The
+  workflow's permissions are unchanged: it still cannot write to any source
+  repository.
 
 ## Profile review requirements
 
@@ -166,6 +175,14 @@ The broker uses its own microphone-only entitlements, never source entitlements.
 The three exact resource bundle declarations authorize data only; symlinks,
 additional nested bundles, executable resources, and Mach-O resources retain
 the existing rejection rules.
+
+The `openlens` profile declares one resource bundle,
+`Contents/Resources/AppUpdater_AppUpdater.bundle`, which holds AppUpdater's
+Sigstore trust roots. It is path-only because Xcode generates the bundle's
+`Contents/Info.plist`, so its bytes change with the toolchain; the same data-only
+rules apply. The `openlens-xcode` adapter replaces the source's
+`Package.resolved` with the reviewed `locks/openlens-Package.resolved` and builds
+with `-onlyUsePackageVersionsFromResolvedFile`.
 
 InstrumentWorkshopKit 1.5.1 is pinned at
 `9f58bdba169bc0013dd8b9ec80b85f65325ac678`, preserving the other dependency pins.

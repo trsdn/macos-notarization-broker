@@ -162,6 +162,50 @@ class ProfileTests(unittest.TestCase):
             ],
         )
 
+    def test_openlens_publishes_the_name_appupdater_looks_for(self) -> None:
+        # AppUpdater only accepts "<repository>-<semver>.dmg". Without this copy,
+        # installed apps never see the release.
+        artifacts = broker.get_profile("openlens")["artifacts"]
+        self.assertIn(
+            {
+                "type": "dmg",
+                "name": "OpenLens-{version}.dmg",
+                "copy_of": "OpenLens-v{version}-macOS-arm64.dmg",
+            },
+            artifacts,
+        )
+
+    def test_artifact_copy_must_follow_an_original_of_the_same_type(self) -> None:
+        dmg = {"type": "dmg", "name": "App-v{version}.dmg"}
+        zip_ = {"type": "zip", "name": "App-v{version}.zip"}
+        broker.validate_artifact_policy(
+            "demo", [dmg, {"type": "dmg", "name": "App-{version}.dmg", "copy_of": dmg["name"]}]
+        )
+        rejected = {
+            "copy before its original": [
+                {"type": "dmg", "name": "App-{version}.dmg", "copy_of": dmg["name"]},
+                dmg,
+            ],
+            "copy of a different type": [
+                zip_,
+                {"type": "dmg", "name": "App-{version}.dmg", "copy_of": zip_["name"]},
+            ],
+            "copy of nothing": [
+                dmg,
+                {"type": "dmg", "name": "App-{version}.dmg", "copy_of": "Other.dmg"},
+            ],
+            "duplicate name": [dmg, dict(dmg)],
+            "case-only duplicate": [dmg, {"type": "dmg", "name": "app-v{version}.DMG"}],
+            "name not matching type": [{"type": "dmg", "name": "App-{version}.zip"}],
+            "unknown field": [dict(dmg, sign=False)],
+            "path traversal": [{"type": "dmg", "name": "../App-{version}.dmg"}],
+            "empty list": [],
+        }
+        for label, artifacts in rejected.items():
+            with self.subTest(label):
+                with self.assertRaises(broker.BrokerError):
+                    broker.validate_artifact_policy("demo", artifacts)
+
     def test_profiles_shipping_nested_code_are_declared(self) -> None:
         # spacemender ships a privileged XPC helper; openconnct ships a CoreAudio
         # HAL plug-in; openlens ships a camera system extension; better-kampfinsel
@@ -1464,6 +1508,55 @@ class BuildAdapterTests(unittest.TestCase):
         self.assertEqual(command[0], "xcodebuild")
         self.assertIn("-project", command)
         self.assertIn(f"DEVELOPMENT_TEAM={profile['team_id']}", command)
+
+    def test_openlens_builds_against_the_reviewed_dependency_lock(self) -> None:
+        profile = broker.get_profile("openlens")
+        calls: list[list[str]] = []
+
+        def fake_run(command, **kwargs):  # type: ignore[no-untyped-def]
+            calls.append(command)
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "source"
+            project = source / "OpenLens.xcodeproj"
+            workspace_lock = project / "project.xcworkspace" / "xcshareddata" / "swiftpm" / "Package.resolved"
+            workspace_lock.parent.mkdir(parents=True)
+            (project / "project.pbxproj").write_text("", encoding="utf-8")
+            # A source that moved a pin must not get its way.
+            workspace_lock.write_text('{"pins": [], "version": 3}', encoding="utf-8")
+            work = Path(temporary) / "work"
+            work.mkdir()
+            with mock.patch.object(broker, "run", side_effect=fake_run):
+                broker.build_openlens(source, work, profile, "1.2.3", "42")
+            self.assertEqual(
+                workspace_lock.read_bytes(),
+                broker.safe_profile_path(profile["dependency_lock"]).read_bytes(),
+            )
+
+        self.assertEqual(len(calls), 2)
+        resolve, build = calls
+        self.assertIn("-resolvePackageDependencies", resolve)
+        for command in calls:
+            self.assertEqual(command[0], "xcodebuild")
+            self.assertIn("-onlyUsePackageVersionsFromResolvedFile", command)
+        self.assertIn("build", build)
+        self.assertIn(f"DEVELOPMENT_TEAM={profile['team_id']}", build)
+
+    def test_openlens_declares_only_the_appupdater_resource_bundle(self) -> None:
+        profile = broker.get_profile("openlens")
+        self.assertEqual(
+            profile["nested_resource_bundles"],
+            [{"path": "Contents/Resources/AppUpdater_AppUpdater.bundle"}],
+        )
+        lock = json.loads(broker.safe_profile_path(profile["dependency_lock"]).read_text())
+        self.assertEqual(
+            {pin["identity"]: pin["state"]["revision"] for pin in lock["pins"]},
+            {
+                "appupdater": "4826e7205ed0159347de84b19960f4ba0e535504",
+                "version": "3043fcd2a50375db76d89ff206a612471833d1c2",
+            },
+        )
 
     def test_spacemender_build_requires_the_committed_project(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
