@@ -20,9 +20,9 @@ tag="${positional[1]:-}"
 output="${positional[2]:-broker-artifacts}"
 
 case "$app" in
-  better-kampfinsel|md2loop|openconnct|opendefendrwatchr|openlens|openswitchr|openwritr|printfilemanager|ptionsplus|spacemender|subvocal|subvocal-light|teleprompter|threemfquicklook) ;;
+  better-kampfinsel|md2loop|openconnct|opendefendrwatchr|openlens|openswitchr|openwritr|openzombr|printfilemanager|ptionsplus|spacemender|subvocal|subvocal-light|teleprompter|threemfquicklook) ;;
   *)
-    echo "Usage: $0 {better-kampfinsel|md2loop|openconnct|opendefendrwatchr|openlens|openswitchr|openwritr|printfilemanager|ptionsplus|spacemender|subvocal|subvocal-light|teleprompter|threemfquicklook} vX.Y.Z [output-directory] [--publish]" >&2
+    echo "Usage: $0 {better-kampfinsel|md2loop|openconnct|opendefendrwatchr|openlens|openswitchr|openwritr|openzombr|printfilemanager|ptionsplus|spacemender|subvocal|subvocal-light|teleprompter|threemfquicklook} vX.Y.Z [output-directory] [--publish]" >&2
     exit 1
     ;;
 esac
