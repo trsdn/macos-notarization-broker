@@ -239,6 +239,7 @@
       "repository": "trsdn/OpenConnct",
       "repository_id": 1342923126,
       "build_adapter": "openconnct-make",
+      "dependency_lock": "locks/openconnct-Package.resolved",
       "team_id": "G69Z5BNY97",
       "bundle_name": "OpenConnct.app",
       "bundle_identifier": "audio.openconnct.app",
@@ -275,6 +276,11 @@
         {
           "type": "dmg",
           "name": "OpenConnct-v{version}-macOS-universal.dmg"
+        },
+        {
+          "type": "dmg",
+          "name": "OpenConnct-{version}.dmg",
+          "copy_of": "OpenConnct-v{version}-macOS-universal.dmg"
         }
       ]
     },
