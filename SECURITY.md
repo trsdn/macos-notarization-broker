@@ -167,6 +167,14 @@ The three exact resource bundle declarations authorize data only; symlinks,
 additional nested bundles, executable resources, and Mach-O resources retain
 the existing rejection rules.
 
+The `openlens` profile declares one resource bundle,
+`Contents/Resources/AppUpdater_AppUpdater.bundle`, which holds AppUpdater's
+Sigstore trust roots. It is path-only because Xcode generates the bundle's
+`Contents/Info.plist`, so its bytes change with the toolchain; the same data-only
+rules apply. The `openlens-xcode` adapter replaces the source's
+`Package.resolved` with the reviewed `locks/openlens-Package.resolved` and builds
+with `-onlyUsePackageVersionsFromResolvedFile`.
+
 InstrumentWorkshopKit 1.5.1 is pinned at
 `9f58bdba169bc0013dd8b9ec80b85f65325ac678`, preserving the other dependency pins.
 Its resource declaration additionally uses `files`, a non-empty map of exact

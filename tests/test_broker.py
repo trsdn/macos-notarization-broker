@@ -1465,6 +1465,55 @@ class BuildAdapterTests(unittest.TestCase):
         self.assertIn("-project", command)
         self.assertIn(f"DEVELOPMENT_TEAM={profile['team_id']}", command)
 
+    def test_openlens_builds_against_the_reviewed_dependency_lock(self) -> None:
+        profile = broker.get_profile("openlens")
+        calls: list[list[str]] = []
+
+        def fake_run(command, **kwargs):  # type: ignore[no-untyped-def]
+            calls.append(command)
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "source"
+            project = source / "OpenLens.xcodeproj"
+            workspace_lock = project / "project.xcworkspace" / "xcshareddata" / "swiftpm" / "Package.resolved"
+            workspace_lock.parent.mkdir(parents=True)
+            (project / "project.pbxproj").write_text("", encoding="utf-8")
+            # A source that moved a pin must not get its way.
+            workspace_lock.write_text('{"pins": [], "version": 3}', encoding="utf-8")
+            work = Path(temporary) / "work"
+            work.mkdir()
+            with mock.patch.object(broker, "run", side_effect=fake_run):
+                broker.build_openlens(source, work, profile, "1.2.3", "42")
+            self.assertEqual(
+                workspace_lock.read_bytes(),
+                broker.safe_profile_path(profile["dependency_lock"]).read_bytes(),
+            )
+
+        self.assertEqual(len(calls), 2)
+        resolve, build = calls
+        self.assertIn("-resolvePackageDependencies", resolve)
+        for command in calls:
+            self.assertEqual(command[0], "xcodebuild")
+            self.assertIn("-onlyUsePackageVersionsFromResolvedFile", command)
+        self.assertIn("build", build)
+        self.assertIn(f"DEVELOPMENT_TEAM={profile['team_id']}", build)
+
+    def test_openlens_declares_only_the_appupdater_resource_bundle(self) -> None:
+        profile = broker.get_profile("openlens")
+        self.assertEqual(
+            profile["nested_resource_bundles"],
+            [{"path": "Contents/Resources/AppUpdater_AppUpdater.bundle"}],
+        )
+        lock = json.loads(broker.safe_profile_path(profile["dependency_lock"]).read_text())
+        self.assertEqual(
+            {pin["identity"]: pin["state"]["revision"] for pin in lock["pins"]},
+            {
+                "appupdater": "4826e7205ed0159347de84b19960f4ba0e535504",
+                "version": "3043fcd2a50375db76d89ff206a612471833d1c2",
+            },
+        )
+
     def test_spacemender_build_requires_the_committed_project(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             source = Path(temporary) / "source"

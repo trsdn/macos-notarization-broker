@@ -1051,15 +1051,38 @@ def build_openlens(
     # image, so the project is committed and this adapter drives it directly. The
     # scheme builds the app and its camera system extension and embeds the latter
     # under Contents/Library/SystemExtensions; preflight pins that path.
+    #
+    # The app links AppUpdater through SwiftPM. As for md2loop, the reviewed
+    # broker lock replaces the source's Package.resolved, so the source cannot
+    # move a dependency to an unreviewed revision.
     ensure_source_file(source, "OpenLens.xcodeproj/project.pbxproj")
+    lock = safe_profile_path(profile["dependency_lock"])
+    workspace_lock = (
+        source
+        / "OpenLens.xcodeproj"
+        / "project.xcworkspace"
+        / "xcshareddata"
+        / "swiftpm"
+        / "Package.resolved"
+    )
+    workspace_lock.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(lock, workspace_lock)
     derived_data = work / "DerivedData"
+    packages = work / "SourcePackages"
+    common = [
+        "xcodebuild",
+        "-project",
+        "OpenLens.xcodeproj",
+        "-scheme",
+        "OpenLens",
+        "-clonedSourcePackagesDirPath",
+        str(packages),
+        "-onlyUsePackageVersionsFromResolvedFile",
+    ]
+    run(common + ["-resolvePackageDependencies"], cwd=source)
     run(
-        [
-            "xcodebuild",
-            "-project",
-            "OpenLens.xcodeproj",
-            "-scheme",
-            "OpenLens",
+        common
+        + [
             "-configuration",
             "Release",
             "-derivedDataPath",

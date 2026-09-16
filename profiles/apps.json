@@ -226,6 +226,7 @@
       "repository": "trsdn/OpenLens",
       "repository_id": 1341576271,
       "build_adapter": "openlens-xcode",
+      "dependency_lock": "locks/openlens-Package.resolved",
       "team_id": "G69Z5BNY97",
       "bundle_name": "OpenLens.app",
       "bundle_identifier": "com.trsdn.openlens",
@@ -250,6 +251,11 @@
             "identifier": "com.trsdn.openlens.camera",
             "package_type": "SYSX"
           }
+        }
+      ],
+      "nested_resource_bundles": [
+        {
+          "path": "Contents/Resources/AppUpdater_AppUpdater.bundle"
         }
       ],
       "dmg_volume_name": "OpenLens",
