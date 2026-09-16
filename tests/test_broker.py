@@ -89,6 +89,7 @@ class ProfileTests(unittest.TestCase):
                 "openlens",
                 "openswitchr",
                 "openwritr",
+                "openzombr",
                 "ptionsplus",
                 "spacemender",
                 "subvocal",
@@ -101,6 +102,7 @@ class ProfileTests(unittest.TestCase):
         profiles = broker.load_profiles()
         self.assertEqual(profiles["md2loop"]["repository_id"], 1168645937)
         self.assertEqual(profiles["opendefendrwatchr"]["repository_id"], 1342759464)
+        self.assertEqual(profiles["openzombr"]["repository_id"], 1350175894)
         self.assertEqual(profiles["openconnct"]["repository_id"], 1342923126)
         self.assertEqual(profiles["openswitchr"]["repository_id"], 1342585430)
         self.assertEqual(profiles["openwritr"]["repository_id"], 1165782217)
@@ -119,7 +121,19 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(names["md2loop"], ["md2loop-{version}-macos.dmg"])
         self.assertEqual(
             names["opendefendrwatchr"],
-            ["OpenDefendrWatchr-v{version}-macOS-arm64.zip"],
+            [
+                "OpenDefendrWatchr-v{version}-macOS-arm64.zip",
+                "OpenDefendrWatchr-v{version}-macOS-arm64.dmg",
+                "OpenDefendrWatchr-{version}.dmg",
+            ],
+        )
+        self.assertEqual(
+            names["openzombr"],
+            [
+                "OpenZombr-v{version}-macOS-arm64.zip",
+                "OpenZombr-v{version}-macOS-arm64.dmg",
+                "OpenZombr-{version}.dmg",
+            ],
         )
         self.assertEqual(
             names["openwritr"],
@@ -1557,6 +1571,65 @@ class BuildAdapterTests(unittest.TestCase):
                 "version": "3043fcd2a50375db76d89ff206a612471833d1c2",
             },
         )
+
+    def menu_bar_source(self, root: Path, profile: dict, lock: str) -> Path:
+        product = profile["executable"]
+        source = root / "source"
+        (source / "Sources" / product).mkdir(parents=True)
+        (source / "Package.resolved").write_text(lock, encoding="utf-8")
+        with (source / "Sources" / product / "Info.plist").open("wb") as handle:
+            plistlib.dump(
+                {"CFBundleIdentifier": profile["bundle_identifier"], "LSUIElement": True}, handle
+            )
+        return source
+
+    def fake_swift_build(self, root: Path, profile: dict, calls: list):  # type: ignore[no-untyped-def]
+        def build(source, product, require_lock):  # type: ignore[no-untyped-def]
+            calls.append((product, require_lock))
+            bin_dir = root / "bin"
+            bundle = bin_dir / "AppUpdater_AppUpdater.bundle"
+            bundle.mkdir(parents=True, exist_ok=True)
+            (bundle / "tuf-root.json").write_text("{}", encoding="utf-8")
+            (bin_dir / product).write_bytes(b"binary")
+            return bin_dir / product
+
+        return build
+
+    def test_menu_bar_apps_build_from_the_reviewed_lock_and_ship_the_updater_bundle(self) -> None:
+        for name in ("opendefendrwatchr", "openzombr"):
+            with self.subTest(profile=name), tempfile.TemporaryDirectory() as temporary:
+                profile = broker.get_profile(name)
+                root = Path(temporary)
+                lock = broker.safe_profile_path(profile["dependency_lock"]).read_text()
+                source = self.menu_bar_source(root, profile, lock)
+                work = root / "work"
+                work.mkdir()
+                calls: list = []
+                with mock.patch.object(
+                    broker, "swift_build", side_effect=self.fake_swift_build(root, profile, calls)
+                ):
+                    app = broker.assemble_menu_bar_swiftpm(source, work, profile, "1.2.3")
+                self.assertEqual(calls, [(profile["executable"], True)])
+                self.assertTrue(
+                    (app / "Contents/Resources/AppUpdater_AppUpdater.bundle/tuf-root.json").is_file()
+                )
+                with (app / "Contents" / "Info.plist").open("rb") as handle:
+                    info = plistlib.load(handle)
+                self.assertEqual(info["CFBundleShortVersionString"], "1.2.3")
+
+    def test_menu_bar_apps_reject_an_unreviewed_lock(self) -> None:
+        for name in ("opendefendrwatchr", "openzombr"):
+            with self.subTest(profile=name), tempfile.TemporaryDirectory() as temporary:
+                profile = broker.get_profile(name)
+                root = Path(temporary)
+                source = self.menu_bar_source(root, profile, '{"pins": [], "version": 3}')
+                work = root / "work"
+                work.mkdir()
+                with mock.patch.object(
+                    broker, "swift_build", side_effect=AssertionError("must not build")
+                ):
+                    with self.assertRaises(broker.BrokerError):
+                        broker.assemble_menu_bar_swiftpm(source, work, profile, "1.2.3")
 
     def test_spacemender_build_requires_the_committed_project(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

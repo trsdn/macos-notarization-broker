@@ -159,6 +159,7 @@ def load_profiles() -> dict[str, Any]:
         "openlens-xcode",
         "openswitchr-swiftpm",
         "openwritr-swiftpm",
+        "openzombr-swiftpm",
         "ptionsplus-xcode",
         "spacemender-xcode",
         "subvocal-swiftpm",
@@ -913,18 +914,38 @@ def assemble_openwritr(source: Path, work: Path, profile: dict[str, Any]) -> Pat
     return app
 
 
-def assemble_opendefendrwatchr(
+def assemble_menu_bar_swiftpm(
     source: Path, work: Path, profile: dict[str, Any], version: str
 ) -> Path:
-    executable = swift_build(source, "OpenDefendrWatchr", require_lock=False)
+    """Assemble OpenDefendrWatchr or OpenZombr, sibling menu bar apps with one layout.
+
+    Both link AppUpdater, so the build is pinned to the broker's reviewed lock and the
+    SwiftPM resource bundles the profile declares are copied into Contents/Resources.
+    """
+    product = profile["executable"]
+    expected_lock = safe_profile_path(profile["dependency_lock"])
+    lock = ensure_source_file(source, "Package.resolved")
+    if json.loads(lock.read_text()) != json.loads(expected_lock.read_text()):
+        fail(f"{product} Package.resolved differs from the reviewed broker dependency lock.")
+    executable = swift_build(source, product, require_lock=True)
+    if json.loads(lock.read_text()) != json.loads(expected_lock.read_text()):
+        fail(f"{product} dependency lock changed during compilation.")
     app = work / profile["bundle_name"]
     macos = app / "Contents" / "MacOS"
+    resources = app / "Contents" / "Resources"
     macos.mkdir(parents=True)
-    # The app ships no resources, but preflight requires the directory to exist.
-    (app / "Contents" / "Resources").mkdir(parents=True)
+    resources.mkdir(parents=True)
     shutil.copy2(executable, macos / profile["executable"])
+    for spec in nested_resource_bundles(profile):
+        bundle = executable.parent / Path(spec["path"]).name
+        if bundle.is_symlink() or not bundle.is_dir():
+            fail(f"Required SwiftPM resource bundle is missing or unsafe: {bundle.name}")
+        # Preserve links and permissions so preflight rejects unsafe content instead
+        # of silently following links or normalizing executable resources.
+        shutil.copytree(bundle, app / spec["path"], symlinks=True)
+    make_resource_bundles_writable(app, profile)
     info_path = app / "Contents" / "Info.plist"
-    shutil.copy2(ensure_source_file(source, "Sources/OpenDefendrWatchr/Info.plist"), info_path)
+    shutil.copy2(ensure_source_file(source, f"Sources/{product}/Info.plist"), info_path)
     with info_path.open("rb") as handle:
         info = plistlib.load(handle)
     # The source Info.plist carries __VERSION__ placeholders that only the app's own
@@ -940,10 +961,12 @@ def assemble_opendefendrwatchr(
             "NSHighResolutionCapable": True,
         }
     )
+    if info.get("CFBundleIdentifier") != profile["bundle_identifier"]:
+        fail(f"{product} Info.plist names a different bundle identifier.")
     # A menu bar app that loses LSUIElement would ship with a Dock icon and a
     # focus-stealing window, so refuse to sign that rather than notarise it.
     if info.get("LSUIElement") is not True:
-        fail("OpenDefendrWatchr must stay menu-bar-only: LSUIElement is not true.")
+        fail(f"{product} must stay menu-bar-only: LSUIElement is not true.")
     with info_path.open("wb") as handle:
         plistlib.dump(info, handle, sort_keys=True)
     return app
@@ -1369,7 +1392,9 @@ def command_build(args: argparse.Namespace) -> None:
         elif adapter == "openconnct-make":
             built_app = build_openconnct(source, work, profile, version, args.build_number)
         elif adapter == "opendefendrwatchr-swiftpm":
-            built_app = assemble_opendefendrwatchr(source, work, profile, version)
+            built_app = assemble_menu_bar_swiftpm(source, work, profile, version)
+        elif adapter == "openzombr-swiftpm":
+            built_app = assemble_menu_bar_swiftpm(source, work, profile, version)
         elif adapter == "openlens-xcode":
             built_app = build_openlens(source, work, profile, version, args.build_number)
         elif adapter == "openswitchr-swiftpm":

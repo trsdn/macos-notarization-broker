@@ -16,6 +16,7 @@ on:
           - openlens
           - openswitchr
           - openwritr
+          - openzombr
           - printfilemanager
           - ptionsplus
           - spacemender

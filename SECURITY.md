@@ -184,6 +184,19 @@ rules apply. The `openlens-xcode` adapter replaces the source's
 `Package.resolved` with the reviewed `locks/openlens-Package.resolved` and builds
 with `-onlyUsePackageVersionsFromResolvedFile`.
 
+The `opendefendrwatchr` and `openzombr` profiles share the
+`assemble_menu_bar_swiftpm` build step. Both link AppUpdater, so the build step:
+
+- requires the source `Package.resolved` to equal the reviewed lock in
+  `locks/`, both before and after compilation;
+- builds with `--only-use-versions-from-resolved-file`;
+- copies only the declared `AppUpdater_AppUpdater.bundle`, a flat,
+  data-only SwiftPM bundle;
+- refuses an Info.plist whose bundle identifier differs from the profile's, or
+  that lacks `LSUIElement`.
+
+Both profiles use empty broker-owned entitlements.
+
 InstrumentWorkshopKit 1.5.1 is pinned at
 `9f58bdba169bc0013dd8b9ec80b85f65325ac678`, preserving the other dependency pins.
 Its resource declaration additionally uses `files`, a non-empty map of exact
