@@ -192,11 +192,11 @@ def input_asset_name(request: dict) -> str:
 
 
 def release_assets(release_id: int) -> list[dict]:
-    pages = json.loads(invoke([
-        "gh", "api", "--paginate", "--slurp",
-        f"repos/{REPOSITORY}/releases/{release_id}/assets?per_page=100",
+    assets = json.loads(invoke([
+        "gh", "api", f"repos/{REPOSITORY}/releases/{release_id}/assets?per_page=100",
     ]))
-    return [asset for page in pages for asset in page]
+    check(isinstance(assets, list))
+    return assets
 
 
 def download_asset(asset: dict, target: Path) -> None:
