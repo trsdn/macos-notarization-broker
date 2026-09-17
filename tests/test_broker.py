@@ -94,7 +94,7 @@ class ProfileTests(unittest.TestCase):
                 "spacemender",
                 "subvocal",
                 "subvocal-light",
-                "teleprompter",
+                "openpromptr",
             },
         )
 
@@ -109,7 +109,7 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(profiles["ptionsplus"]["repository_id"], 1165009675)
         self.assertEqual(profiles["openlens"]["repository_id"], 1341576271)
         self.assertEqual(profiles["spacemender"]["repository_id"], 1339151393)
-        self.assertEqual(profiles["teleprompter"]["repository_id"], 1339874326)
+        self.assertEqual(profiles["openpromptr"]["repository_id"], 1339874326)
         self.assertEqual(profiles["better-kampfinsel"]["repository_id"], 1345283003)
 
     def test_artifact_names_preserve_existing_release_contracts(self) -> None:
@@ -158,8 +158,12 @@ class ProfileTests(unittest.TestCase):
             ],
         )
         self.assertEqual(
-            names["teleprompter"],
-            ["Teleprompter-Mirror-v{version}-macOS-arm64.zip"],
+            names["openpromptr"],
+            [
+                "OpenPromptr-v{version}-macOS-arm64.zip",
+                "OpenPromptr-v{version}-macOS-arm64.dmg",
+                "OpenPromptr-{version}.dmg",
+            ],
         )
         self.assertEqual(
             names["openconnct"],
@@ -403,7 +407,7 @@ class InputValidationTests(unittest.TestCase):
 
 class ArchiveValidationTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.profile = broker.get_profile("teleprompter")
+        self.profile = broker.get_profile("openpromptr")
 
     def test_archive_rejects_content_outside_expected_bundle(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -416,7 +420,7 @@ class ArchiveValidationTests(unittest.TestCase):
     def test_archive_rejects_symlink_entries(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             archive = Path(temporary) / "symlink.zip"
-            entry = zipfile.ZipInfo("Teleprompter Mirror.app/Contents/MacOS/link")
+            entry = zipfile.ZipInfo("OpenPromptr.app/Contents/MacOS/link")
             entry.create_system = 3
             entry.external_attr = (stat.S_IFLNK | 0o777) << 16
             with zipfile.ZipFile(archive, "w") as handle:
@@ -428,7 +432,7 @@ class ArchiveValidationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             archive = Path(temporary) / "appledouble.zip"
             with zipfile.ZipFile(archive, "w") as handle:
-                handle.writestr("Teleprompter Mirror.app/Contents/._Info.plist", "bad")
+                handle.writestr("OpenPromptr.app/Contents/._Info.plist", "bad")
             with self.assertRaises(broker.BrokerError):
                 broker.inspect_zip(archive, self.profile)
 
@@ -447,15 +451,15 @@ class SignedEntitlementsTests(unittest.TestCase):
             returncode=0,
             stdout=self.ENTITLEMENTS_XML,
             stderr=(
-                b"Executable=/tmp/Teleprompter Mirror.app/Contents/MacOS/"
-                b"TeleprompterMirror\n"
+                b"Executable=/tmp/OpenPromptr.app/Contents/MacOS/"
+                b"OpenPromptr\n"
             ),
         )
         with mock.patch.object(
             broker.subprocess, "run", return_value=completed
         ) as codesign:
             entitlements = broker.read_signed_entitlements(
-                Path("/tmp/Teleprompter Mirror.app")
+                Path("/tmp/OpenPromptr.app")
             )
 
         self.assertEqual(entitlements, {})
@@ -466,7 +470,7 @@ class SignedEntitlementsTests(unittest.TestCase):
                 "--xml",
                 "--entitlements",
                 "-",
-                "/tmp/Teleprompter Mirror.app",
+                "/tmp/OpenPromptr.app",
             ],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -500,7 +504,7 @@ class NestedExecutablePolicyTests(unittest.TestCase):
                 {
                     "path": "Contents/MacOS/DemoHelper",
                     "identifier": "com.example.Demo.Helper",
-                    "entitlements": "entitlements/teleprompter.plist",
+                    "entitlements": "entitlements/openpromptr.plist",
                 }
             ],
         }
@@ -612,7 +616,7 @@ class NestedExecutablePolicyTests(unittest.TestCase):
                 {
                     "path": "Contents/Library/Audio/Plug-Ins/HAL/Demo.driver/Contents/MacOS/Demo",
                     "identifier": "com.example.Demo.driver",
-                    "entitlements": "entitlements/teleprompter.plist",
+                    "entitlements": "entitlements/openpromptr.plist",
                     "plugin_bundle": {
                         "path": "Contents/Library/Audio/Plug-Ins/HAL/Demo.driver",
                         "identifier": "com.example.Demo.driver",
@@ -689,7 +693,7 @@ class NestedExecutablePolicyTests(unittest.TestCase):
                         ".systemextension/Contents/MacOS/com.example.Demo.camera"
                     ),
                     "identifier": "com.example.Demo.camera",
-                    "entitlements": "entitlements/teleprompter.plist",
+                    "entitlements": "entitlements/openpromptr.plist",
                     "plugin_bundle": {
                         "path": (
                             "Contents/Library/SystemExtensions/com.example.Demo.camera"
@@ -809,7 +813,7 @@ class BundleFixtureMixin:
                 {
                     "path": "Contents/MacOS/DemoHelper",
                     "identifier": "com.example.Demo.Helper",
-                    "entitlements": "entitlements/teleprompter.plist",
+                    "entitlements": "entitlements/openpromptr.plist",
                     "embedded_info_plist": {
                         "ClientRequirement": (
                             'anchor apple generic and certificate leaf[subject.OU] = "{team_id}"'
@@ -1210,7 +1214,7 @@ class PluginBundleValidationTests(BundleFixtureMixin, unittest.TestCase):
                 {
                     "path": "Contents/Library/Audio/Plug-Ins/HAL/Demo.driver/Contents/MacOS/Demo",
                     "identifier": "com.example.Demo.driver",
-                    "entitlements": "entitlements/teleprompter.plist",
+                    "entitlements": "entitlements/openpromptr.plist",
                     "plugin_bundle": {
                         "path": "Contents/Library/Audio/Plug-Ins/HAL/Demo.driver",
                         "identifier": "com.example.Demo.driver",
@@ -1573,6 +1577,21 @@ class BuildAdapterTests(unittest.TestCase):
             },
         )
 
+    def test_openpromptr_declares_only_the_appupdater_resource_bundle(self) -> None:
+        profile = broker.get_profile("openpromptr")
+        self.assertEqual(
+            profile["nested_resource_bundles"],
+            [{"path": "Contents/Resources/AppUpdater_AppUpdater.bundle"}],
+        )
+        lock = json.loads(broker.safe_profile_path(profile["dependency_lock"]).read_text())
+        self.assertEqual(
+            {pin["identity"]: pin["state"]["revision"] for pin in lock["pins"]},
+            {
+                "appupdater": "4826e7205ed0159347de84b19960f4ba0e535504",
+                "version": "3043fcd2a50375db76d89ff206a612471833d1c2",
+            },
+        )
+
     def menu_bar_source(self, root: Path, profile: dict, lock: str) -> Path:
         product = profile["executable"]
         source = root / "source"
@@ -1631,6 +1650,57 @@ class BuildAdapterTests(unittest.TestCase):
                 ):
                     with self.assertRaises(broker.BrokerError):
                         broker.assemble_menu_bar_swiftpm(source, work, profile, "1.2.3")
+
+    def openpromptr_source(self, root: Path, profile: dict, lock: str) -> Path:
+        # Unlike the menu-bar apps, OpenPromptr keeps its Info.plist at Config/
+        # rather than Sources/<product>/, and it is a regular windowed app, so its
+        # fixture carries no LSUIElement key.
+        source = root / "source"
+        (source / "Config").mkdir(parents=True)
+        (source / "Resources").mkdir(parents=True)
+        (source / "Package.resolved").write_text(lock, encoding="utf-8")
+        with (source / "Config" / "Info.plist").open("wb") as handle:
+            plistlib.dump({"CFBundleIdentifier": profile["bundle_identifier"]}, handle)
+        (source / "Resources" / "AppIcon.icns").write_bytes(b"icon")
+        return source
+
+    def test_openpromptr_builds_from_the_reviewed_lock_and_ships_the_updater_bundle(
+        self,
+    ) -> None:
+        profile = broker.get_profile("openpromptr")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            lock = broker.safe_profile_path(profile["dependency_lock"]).read_text()
+            source = self.openpromptr_source(root, profile, lock)
+            work = root / "work"
+            work.mkdir()
+            calls: list = []
+            with mock.patch.object(
+                broker, "swift_build", side_effect=self.fake_swift_build(root, profile, calls)
+            ):
+                app = broker.assemble_openpromptr(source, work, profile, "1.2.3", "42")
+            self.assertEqual(calls, [(profile["executable"], True)])
+            self.assertTrue(
+                (app / "Contents/Resources/AppUpdater_AppUpdater.bundle/tuf-root.json").is_file()
+            )
+            self.assertTrue((app / "Contents/Resources/AppIcon.icns").is_file())
+            with (app / "Contents" / "Info.plist").open("rb") as handle:
+                info = plistlib.load(handle)
+            self.assertEqual(info["CFBundleShortVersionString"], "1.2.3")
+            self.assertEqual(info["CFBundleVersion"], "42")
+
+    def test_openpromptr_rejects_an_unreviewed_lock(self) -> None:
+        profile = broker.get_profile("openpromptr")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = self.openpromptr_source(root, profile, '{"pins": [], "version": 3}')
+            work = root / "work"
+            work.mkdir()
+            with mock.patch.object(
+                broker, "swift_build", side_effect=AssertionError("must not build")
+            ):
+                with self.assertRaises(broker.BrokerError):
+                    broker.assemble_openpromptr(source, work, profile, "1.2.3", "42")
 
     def test_spacemender_build_requires_the_committed_project(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
