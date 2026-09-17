@@ -144,13 +144,24 @@ disabled; `scripts/local.sh` still dispatches the same hardened workflow.
 - **`gh release create --notes-from-tag` cannot be combined with `--repo`.**
   It reads the tag's annotation from a *local* git checkout, which
   `scripts/request.sh` never has — it only ever holds a checkout of this
-  repository, never of a profile's source repository. `request.sh` fetches
-  the same content itself instead: the annotated tag's message via the API
-  (using the `tag_object_sha` already recorded in `provenance.json`, so no
-  extra lookup), or the commit message for a lightweight tag, piped into
-  `--notes-file -`. Found the hard way cutting `trsdn/OpenPromptr`'s actual
-  first release — the flag combination fails for every profile, not just
-  that one.
+  repository, never of a profile's source repository. Found the hard way
+  cutting `trsdn/OpenPromptr`'s actual first release — the flag combination
+  fails for every profile, not just that one. This is why release notes
+  aren't sourced from the tag at all anymore — see the next point.
+- **Release notes come from `CHANGELOG.md`, not the tag, and this is
+  mandatory for every profile.** `request.sh --publish` fetches the source
+  repository's `CHANGELOG.md` at the tag through the API and extracts the
+  entry for exactly that version, failing the release if the file is
+  missing, the entry is missing or empty, or the entry is still sitting
+  under `## Unreleased` — the `R07` gate from the
+  [trsdn Repository Quality Standard](https://github.com/trsdn/.github/blob/main/docs/repository-quality-standard.md)
+  (see [decision 0010](https://github.com/trsdn/.github/blob/main/docs/decisions/0010-release-notes-come-from-the-changelog.md)
+  and its reference `templates/release-notes/release.yml`, whose two `awk`
+  gates are reproduced here rather than adopted as a standalone workflow,
+  since a release here never builds or signs inside the source repository's
+  own CI). A profile without a maintained `CHANGELOG.md` simply cannot
+  publish through this script — that's the intended failure mode, not a bug
+  to work around with a fallback.
 - **`macos-signing` has no required reviewer, by design.** See
   `SECURITY.md`'s "Required repository settings" item 4 for the reasoning
   (a sole maintainer approving their own request isn't real separation of
