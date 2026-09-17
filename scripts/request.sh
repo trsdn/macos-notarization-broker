@@ -167,30 +167,58 @@ for file in "${release_files[@]}"; do
 done
 
 if ! gh release view "$tag" --repo "$source_repository" >/dev/null 2>&1; then
-  # `gh release create --notes-from-tag` reads the tag's annotation from a
-  # *local* git checkout, which this script never has -- it only ever holds a
-  # checkout of the broker itself, never of the source repository -- and gh
-  # refuses to combine that flag with --repo for exactly that reason ("using
-  # --notes-from-tag with --repo is not supported"). Fetch the same content
-  # through the API instead: an annotated tag's message, or the commit
-  # message for a lightweight one, matching what --notes-from-tag documents.
-  # Two separate substitutions, not one `read` on a single line: a lightweight
-  # tag's tag_object_sha is empty, and `read -r a b` silently drops a leading
-  # empty field instead of leaving `a` empty, which would swap the two values.
-  tag_object_sha="$(
-    python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["source"]["tag_object_sha"] or "")' \
-      "$destination/provenance.json"
+  # R07 (trsdn Repository Quality Standard, decision 0010): the published
+  # notes are the maintained CHANGELOG.md entry for exactly this version,
+  # never freestanding text, and the release fails rather than publishing
+  # something else. trsdn/.github publishes a reference workflow for this
+  # (templates/release-notes/release.yml) built as a standalone in-repo CI
+  # job; that shape doesn't fit here; a release never builds or signs inside
+  # the source repository's own CI, so the same two gates are reproduced
+  # below against CHANGELOG.md fetched through the API instead of a local
+  # checkout -- this script never has one of the source repository, same
+  # reason `--notes-from-tag` doesn't work here either (see above). This is
+  # mandatory for every profile, not best-effort: a repository with no
+  # CHANGELOG.md fails here rather than falling back to silently-unread
+  # tag/commit text, which is the exact failure mode R07 exists to close.
+  changelog="$(
+    gh api "repos/$source_repository/contents/CHANGELOG.md?ref=$tag" \
+      -H "Accept: application/vnd.github.raw" 2>/dev/null
+  )" || {
+    echo "release: $source_repository has no CHANGELOG.md at $tag; required by R07." >&2
+    exit 1
+  }
+
+  # Gate, part one: nothing ships while still described as unreleased, or it
+  # ships and then appears in no release notes at all.
+  held="$(
+    printf '%s\n' "$changelog" | awk '
+      tolower($0) ~ /^##[ \t]+\[?unreleased\]?/ { capture = 1; next }
+      capture && /^## / { exit }
+      capture { print }
+    ' | tr -d '[:space:]'
   )"
-  commit_sha="$(
-    python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["source"]["commit_sha"])' \
-      "$destination/provenance.json"
+  [[ -z "$held" ]] || {
+    echo "release: $source_repository's CHANGELOG.md still holds entries under Unreleased; promote them into $tag first." >&2
+    exit 1
+  }
+
+  # Gate, part two: the notes are extracted, never authored here. Accepts
+  # both "## 1.2.3 - ..." and the Keep-a-Changelog "## [1.2.3] - ..." form.
+  version="${tag#v}"
+  notes="$(
+    printf '%s\n' "$changelog" | awk -v version="$version" '
+      BEGIN { gsub(/\./, "\\.", version) }
+      $0 ~ "^## \\[?" version "\\]?([ \t]|$)" { capture = 1; next }
+      capture && /^## / { exit }
+      capture { print }
+    '
   )"
-  if [[ -n "$tag_object_sha" ]]; then
-    tag_message="$(gh api "repos/$source_repository/git/tags/$tag_object_sha" --jq .message)"
-  else
-    tag_message="$(gh api "repos/$source_repository/git/commits/$commit_sha" --jq .message)"
-  fi
-  printf '%s' "$tag_message" | gh release create "$tag" \
+  [[ -n "${notes//[[:space:]]/}" ]] || {
+    echo "release: $source_repository's CHANGELOG.md has no entry for $version." >&2
+    exit 1
+  }
+
+  printf '%s\n' "$notes" | gh release create "$tag" \
     --repo "$source_repository" \
     --verify-tag \
     --notes-file -
