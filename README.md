@@ -100,9 +100,12 @@ scripts/request.sh <app> vX.Y.Z --publish
 After verification it uploads every file that `provenance.json` lists, with its
 `.sha256`, plus `provenance.json` and `preflight-manifest.json`, to the release
 for that tag in the profile's source repository. If there is no release yet, it
-creates one from the tag (`--verify-tag --notes-from-tag`). The upload uses the
-caller's `gh` credentials; the workflow itself never writes to a source
-repository.
+creates one from the tag (`--verify-tag`), with notes fetched through the API
+from the tag's annotation, or the commit message for a lightweight tag —
+`gh release create --notes-from-tag` reads that annotation from a local git
+checkout, which this script never has, so it fetches the same content itself
+instead. The upload uses the caller's `gh` credentials; the workflow itself
+never writes to a source repository.
 
 A profile artifact may set `copy_of` to the name of an earlier artifact of the
 same type. The signed file is then published a second time under the new name,
