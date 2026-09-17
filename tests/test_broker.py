@@ -1589,6 +1589,10 @@ class BuildAdapterTests(unittest.TestCase):
             {
                 "appupdater": "4826e7205ed0159347de84b19960f4ba0e535504",
                 "version": "3043fcd2a50375db76d89ff206a612471833d1c2",
+                # Swifter (the local control API's HTTP layer, issue #4) has no
+                # resource bundle of its own -- it's compiled straight into
+                # the executable -- so it's pinned here but not above.
+                "swifter": "9483a5d459b45c3ffd059f7b55f9638e268632fd",
             },
         )
 
