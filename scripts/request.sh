@@ -167,10 +167,33 @@ for file in "${release_files[@]}"; do
 done
 
 if ! gh release view "$tag" --repo "$source_repository" >/dev/null 2>&1; then
-  gh release create "$tag" \
+  # `gh release create --notes-from-tag` reads the tag's annotation from a
+  # *local* git checkout, which this script never has -- it only ever holds a
+  # checkout of the broker itself, never of the source repository -- and gh
+  # refuses to combine that flag with --repo for exactly that reason ("using
+  # --notes-from-tag with --repo is not supported"). Fetch the same content
+  # through the API instead: an annotated tag's message, or the commit
+  # message for a lightweight one, matching what --notes-from-tag documents.
+  # Two separate substitutions, not one `read` on a single line: a lightweight
+  # tag's tag_object_sha is empty, and `read -r a b` silently drops a leading
+  # empty field instead of leaving `a` empty, which would swap the two values.
+  tag_object_sha="$(
+    python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["source"]["tag_object_sha"] or "")' \
+      "$destination/provenance.json"
+  )"
+  commit_sha="$(
+    python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["source"]["commit_sha"])' \
+      "$destination/provenance.json"
+  )"
+  if [[ -n "$tag_object_sha" ]]; then
+    tag_message="$(gh api "repos/$source_repository/git/tags/$tag_object_sha" --jq .message)"
+  else
+    tag_message="$(gh api "repos/$source_repository/git/commits/$commit_sha" --jq .message)"
+  fi
+  printf '%s' "$tag_message" | gh release create "$tag" \
     --repo "$source_repository" \
     --verify-tag \
-    --notes-from-tag
+    --notes-file -
 fi
 gh release upload "$tag" "${release_files[@]}" --repo "$source_repository" --clobber
 echo "Published ${#release_files[@]} files to https://github.com/$source_repository/releases/tag/$tag"
