@@ -213,6 +213,18 @@ def download_asset(asset: dict, target: Path) -> None:
     check(isinstance(digest, str) and digest == "sha256:" + broker.sha256_file(target))
 
 
+def asset_is_ready(asset: dict) -> bool:
+    digest = asset.get("digest")
+    return (
+        type(asset.get("id")) is int
+        and 0 < asset.get("size", 0) <= MAX_TRANSFER
+        and asset.get("uploader", {}).get("id") == OWNER_ID
+        and asset.get("state") == "uploaded"
+        and isinstance(digest, str)
+        and SHA256.fullmatch(digest.removeprefix("sha256:")) is not None
+    )
+
+
 def preflight(work: Path, age: Path) -> None:
     request = read_json(work / "request.json")
     check(request == runner_request())
@@ -222,7 +234,7 @@ def preflight(work: Path, age: Path) -> None:
     for _ in range(120):
         matches = [a for a in release_assets(release["id"]) if a["name"] == input_asset_name(request)]
         check(len(matches) <= 1)
-        if matches:
+        if matches and asset_is_ready(matches[0]):
             asset = matches[0]
             break
         time.sleep(5)

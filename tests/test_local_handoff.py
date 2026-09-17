@@ -232,7 +232,14 @@ raise SystemExit(local_handoff.remote("start"))
         }
         handoff.write_json(preflight / "request.json", request)
         (preflight / "preflight.identity").write_text("ephemeral")
-        asset = {"id": 456, "name": handoff.input_asset_name(request)}
+        asset = {
+            "id": 456,
+            "name": handoff.input_asset_name(request),
+            "size": len(raw_archive),
+            "state": "uploaded",
+            "digest": "sha256:" + values["archive_sha256"],
+            "uploader": {"id": handoff.OWNER_ID},
+        }
         tree_digest = "d" * 64
         manifest = {
             "profile": "subvocal", "version": "2.0.0", "profile_digest": profile_digest,
