@@ -197,6 +197,17 @@ The `opendefendrwatchr` and `openzombr` profiles share the
 
 Both profiles use empty broker-owned entitlements.
 
+The `openpromptr` profile also links AppUpdater but is not a menu-bar app —
+it is a regular windowed app whose `Info.plist` lives at `Config/Info.plist`
+rather than `Sources/<product>/Info.plist` — so it gets its own
+`assemble_openpromptr` build step rather than reusing
+`assemble_menu_bar_swiftpm`. It applies the same lock verification (before
+and after compilation) and the same data-only `AppUpdater_AppUpdater.bundle`
+copy, but does not require `LSUIElement`, and additionally copies the
+source-committed `Resources/AppIcon.icns` into the built bundle, since this
+adapter (like `assemble_openwritr`) assembles the tree itself rather than
+inheriting one an Xcode build already produced.
+
 The `openconnct` profile builds AppUpdater from the source's `Update/` SwiftPM
 package through the committed Makefile. Before `make` runs, the build step:
 
@@ -394,9 +405,10 @@ expectation, otherwise only the first check applies.
   but do not eliminate this risk.
 - md2loop uses a broker-owned `Package.resolved` because its tagged source did
   not contain one. Future dependency changes require a reviewed lock update.
-- OpenWritr uses its source-committed dependency lock. Teleprompter Mirror and
-  Ptions+ currently have no external package resolution in their release
-  builds.
+- OpenWritr uses its source-committed dependency lock. Ptions+ currently has
+  no external package resolution in its release builds. OpenPromptr (formerly
+  Teleprompter Mirror) gained one when it started linking AppUpdater; see the
+  `openpromptr` paragraph above.
 - Structural validation does not prove that application behavior is benign. A
   declared nested executable is validated and pinned, not vetted; a privileged
   helper still runs source-repository logic with the privileges its bundled
