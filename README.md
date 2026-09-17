@@ -20,9 +20,9 @@ The workflow runs four isolated jobs:
 4. **Sign** signs, notarizes, staples, and checksums in the protected
    `macos-signing` environment using only broker-owned code.
 
-Step 4 waits for a required reviewer, so a run can sit idle for as long as
-GitHub allows a gated run to wait. The bundle handed between steps is retained
-for that whole window; approving late is slow, never fatal.
+Step 4 runs unattended: `macos-signing` has no required reviewer (see
+[SECURITY.md](SECURITY.md) for why that's still safe for a sole maintainer).
+If a second trusted maintainer joins, reconsider adding one back.
 
 External source scripts never run in the privileged job, action dependencies
 are pinned to commit SHAs, and permissions are read-only per job.

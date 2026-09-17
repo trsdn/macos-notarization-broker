@@ -60,10 +60,17 @@ are configured on the repository and must stay in place:
    checks. Enable `require_code_owner_review` as soon as a second trusted
    maintainer exists.
 3. Keep the five Apple values only in the `macos-signing` environment.
-4. Restrict `macos-signing` to the `main` branch and configure a required
-   reviewer. If a sole maintainer must self-approve, keep
-   `prevent_self_review` disabled and understand that approval is an
-   operational confirmation rather than separation of duties.
+4. Restrict `macos-signing` to the `main` branch. It intentionally has **no**
+   required reviewer: for a sole maintainer, an approval step is not real
+   separation of duties, since the same person requests and approves — it
+   was an operational pause, not a security boundary, and the actual gate is
+   the immutable-identity dispatch check in item 8 below plus this
+   repository's own PR-required, no-bypass branch protection. Removed
+   2026-09-17 after it blocked `trsdn/OpenPromptr`'s first release on a
+   confirmation click that added friction without adding protection. If a
+   second trusted maintainer joins, reconsider: add a required reviewer
+   other than the requester, and keep `prevent_self_review` enabled so the
+   requester can't be their own approval.
 5. Remove old repository-level Apple secrets.
 6. Allow only GitHub-owned actions. The workflow additionally pins every
    action to a full commit SHA.
@@ -88,8 +95,8 @@ repository is private. In that case:
 1. Keep a local backup of the Apple credentials.
 2. Delete all five repository-level secrets before changing visibility.
 3. Make the repository public with Actions disabled, or do not dispatch it.
-4. Configure the `macos-signing` environment, its `main` branch policy, a
-   required reviewer, and the `main` ruleset.
+4. Configure the `macos-signing` environment, its `main` branch policy, and
+   the `main` ruleset. (A required reviewer is optional — see item 4 above.)
 5. Run `scripts/setup-secrets.sh` to store environment-scoped secrets.
 6. Verify that `gh secret list --repo trsdn/macos-notarization-broker` does not
    list any of the five Apple secret names before enabling dispatch.
