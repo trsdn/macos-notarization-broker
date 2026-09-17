@@ -163,7 +163,7 @@ def load_profiles() -> dict[str, Any]:
         "ptionsplus-xcode",
         "spacemender-xcode",
         "subvocal-swiftpm",
-        "teleprompter-swiftpm",
+        "openpromptr-swiftpm",
     }
     for name, profile in profiles.items():
         if not re.fullmatch(r"[a-z0-9-]+", name):
@@ -1182,15 +1182,41 @@ def build_spacemender(
     return derived_data / "Build" / "Products" / "Release" / profile["bundle_name"]
 
 
-def assemble_teleprompter(source: Path, work: Path, profile: dict[str, Any]) -> Path:
-    executable = swift_build(source, "TeleprompterMirror", require_lock=False)
+def assemble_openpromptr(
+    source: Path, work: Path, profile: dict[str, Any], version: str, build_number: str
+) -> Path:
+    """Assemble OpenPromptr (formerly Teleprompter Mirror).
+
+    Unlike the menu-bar siblings assembled by assemble_menu_bar_swiftpm, OpenPromptr is a
+    regular windowed app (no LSUIElement) and keeps its Info.plist at Config/Info.plist
+    rather than Sources/<product>/Info.plist, so it gets its own adapter rather than
+    reusing that one. It now links AppUpdater, so — like assemble_menu_bar_swiftpm, and
+    unlike this adapter's previous, dependency-free build — it is pinned to the broker's
+    reviewed lock.
+    """
+    product = profile["executable"]
+    expected_lock = safe_profile_path(profile["dependency_lock"])
+    lock = ensure_source_file(source, "Package.resolved")
+    if json.loads(lock.read_text()) != json.loads(expected_lock.read_text()):
+        fail(f"{product} Package.resolved differs from the reviewed broker dependency lock.")
+    executable = swift_build(source, product, require_lock=True)
+    if json.loads(lock.read_text()) != json.loads(expected_lock.read_text()):
+        fail(f"{product} dependency lock changed during compilation.")
     app = work / profile["bundle_name"]
     macos = app / "Contents" / "MacOS"
     resources = app / "Contents" / "Resources"
     macos.mkdir(parents=True)
     resources.mkdir(parents=True)
     shutil.copy2(executable, macos / profile["executable"])
+    shutil.copy2(ensure_source_file(source, "Resources/AppIcon.icns"), resources / "AppIcon.icns")
     shutil.copy2(ensure_source_file(source, "Config/Info.plist"), app / "Contents" / "Info.plist")
+    for spec in nested_resource_bundles(profile):
+        bundle = executable.parent / Path(spec["path"]).name
+        if bundle.is_symlink() or not bundle.is_dir():
+            fail(f"Required SwiftPM resource bundle is missing or unsafe: {bundle.name}")
+        shutil.copytree(bundle, app / spec["path"], symlinks=True)
+    make_resource_bundles_writable(app, profile)
+    stamp_bundle_version(app, version, build_number)
     return app
 
 
@@ -1434,8 +1460,8 @@ def command_build(args: argparse.Namespace) -> None:
             built_app = build_spacemender(source, work, profile, version, args.build_number)
         elif adapter == "subvocal-swiftpm":
             built_app = assemble_subvocal(source, work, profile)
-        elif adapter == "teleprompter-swiftpm":
-            built_app = assemble_teleprompter(source, work, profile)
+        elif adapter == "openpromptr-swiftpm":
+            built_app = assemble_openpromptr(source, work, profile, version, args.build_number)
         else:
             fail(f"Unsupported build adapter: {adapter}")
 

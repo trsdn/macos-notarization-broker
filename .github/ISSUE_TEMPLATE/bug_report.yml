@@ -31,7 +31,7 @@ body:
     id: profile
     attributes:
       label: Application profile and tag
-      description: For example `teleprompter v1.4.0`. Leave blank if not applicable.
+      description: For example `openpromptr v1.4.0`. Leave blank if not applicable.
 
   - type: textarea
     id: expected

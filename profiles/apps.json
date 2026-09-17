@@ -85,27 +85,43 @@
         }
       ]
     },
-    "teleprompter": {
-      "repository": "trsdn/teleprompter-mirror-macos",
+    "openpromptr": {
+      "repository": "trsdn/OpenPromptr",
       "repository_id": 1339874326,
-      "build_adapter": "teleprompter-swiftpm",
-      "bundle_name": "Teleprompter Mirror.app",
-      "bundle_identifier": "com.github.trsdn.TeleprompterMirror",
-      "bundle_display_name": "Teleprompter Mirror",
-      "executable": "TeleprompterMirror",
+      "build_adapter": "openpromptr-swiftpm",
+      "dependency_lock": "locks/openpromptr-Package.resolved",
+      "bundle_name": "OpenPromptr.app",
+      "bundle_identifier": "com.github.trsdn.OpenPromptr",
+      "bundle_display_name": "OpenPromptr",
+      "executable": "OpenPromptr",
       "package_type": "APPL",
       "architectures": [
         "arm64"
       ],
       "minimum_system_version": "13.0",
-      "entitlements": "entitlements/teleprompter.plist",
+      "entitlements": "entitlements/openpromptr.plist",
+      "nested_resource_bundles": [
+        {
+          "path": "Contents/Resources/AppUpdater_AppUpdater.bundle"
+        }
+      ],
+      "dmg_volume_name": "OpenPromptr",
       "max_archive_bytes": 1073741824,
       "max_uncompressed_bytes": 2147483648,
       "max_files": 5000,
       "artifacts": [
         {
           "type": "zip",
-          "name": "Teleprompter-Mirror-v{version}-macOS-arm64.zip"
+          "name": "OpenPromptr-v{version}-macOS-arm64.zip"
+        },
+        {
+          "type": "dmg",
+          "name": "OpenPromptr-v{version}-macOS-arm64.dmg"
+        },
+        {
+          "type": "dmg",
+          "name": "OpenPromptr-{version}.dmg",
+          "copy_of": "OpenPromptr-v{version}-macOS-arm64.dmg"
         }
       ]
     },

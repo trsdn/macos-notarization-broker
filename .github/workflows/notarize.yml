@@ -14,6 +14,7 @@ on:
           - openconnct
           - opendefendrwatchr
           - openlens
+          - openpromptr
           - openswitchr
           - openwritr
           - openzombr
@@ -22,7 +23,6 @@ on:
           - spacemender
           - subvocal
           - subvocal-light
-          - teleprompter
           - threemfquicklook
       tag:
         description: Existing release tag, for example v1.0.2
