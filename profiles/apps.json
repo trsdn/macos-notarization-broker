@@ -308,7 +308,7 @@
       "team_id": "G69Z5BNY97",
       "bundle_name": "OpenLens.app",
       "bundle_identifier": "com.trsdn.openlens",
-      "bundle_display_name": "OpenCamraHub",
+      "bundle_display_name": "OpenLens",
       "executable": "OpenLens",
       "package_type": "APPL",
       "architectures": [
