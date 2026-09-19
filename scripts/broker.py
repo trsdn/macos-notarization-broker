@@ -160,6 +160,7 @@ def load_profiles() -> dict[str, Any]:
         "openswitchr-swiftpm",
         "openwritr-swiftpm",
         "openzombr-swiftpm",
+        "openzonr-swiftpm",
         "ptionsplus-xcode",
         "spacemender-xcode",
         "subvocal-swiftpm",
@@ -917,10 +918,14 @@ def assemble_openwritr(source: Path, work: Path, profile: dict[str, Any]) -> Pat
 def assemble_menu_bar_swiftpm(
     source: Path, work: Path, profile: dict[str, Any], version: str
 ) -> Path:
-    """Assemble OpenDefendrWatchr or OpenZombr, sibling menu bar apps with one layout.
+    """Assemble OpenDefendrWatchr, OpenZombr or OpenZonr, menu bar apps with one layout.
 
-    Both link AppUpdater, so the build is pinned to the broker's reviewed lock and the
-    SwiftPM resource bundles the profile declares are copied into Contents/Resources.
+    All three link AppUpdater, so the build is pinned to the broker's reviewed lock and
+    the SwiftPM resource bundles the profile declares are copied into Contents/Resources.
+    The SwiftPM product name is the profile's `executable`, which is also the file name
+    in Contents/MacOS and the directory the source Info.plist is read from, so a product
+    whose name differs from the bundle's (OpenZonrApp in OpenZonr.app) needs no special
+    case here.
     """
     product = profile["executable"]
     expected_lock = safe_profile_path(profile["dependency_lock"])
@@ -1514,6 +1519,8 @@ def command_build(args: argparse.Namespace) -> None:
         elif adapter == "opendefendrwatchr-swiftpm":
             built_app = assemble_menu_bar_swiftpm(source, work, profile, version)
         elif adapter == "openzombr-swiftpm":
+            built_app = assemble_menu_bar_swiftpm(source, work, profile, version)
+        elif adapter == "openzonr-swiftpm":
             built_app = assemble_menu_bar_swiftpm(source, work, profile, version)
         elif adapter == "openlens-xcode":
             built_app = build_openlens(source, work, profile, version, args.build_number)

@@ -191,8 +191,9 @@ rules apply. The `openlens-xcode` adapter replaces the source's
 `Package.resolved` with the reviewed `locks/openlens-Package.resolved` and builds
 with `-onlyUsePackageVersionsFromResolvedFile`.
 
-The `opendefendrwatchr` and `openzombr` profiles share the
-`assemble_menu_bar_swiftpm` build step. Both link AppUpdater, so the build step:
+The `opendefendrwatchr`, `openzombr` and `openzonr` profiles share the
+`assemble_menu_bar_swiftpm` build step. All three link AppUpdater, so the build
+step:
 
 - requires the source `Package.resolved` to equal the reviewed lock in
   `locks/`, both before and after compilation;
@@ -202,7 +203,16 @@ The `opendefendrwatchr` and `openzombr` profiles share the
 - refuses an Info.plist whose bundle identifier differs from the profile's, or
   that lacks `LSUIElement`.
 
-Both profiles use empty broker-owned entitlements.
+All three profiles use empty broker-owned entitlements. `openzonr` needs none
+either: OpenZonr drives other windows through the Accessibility API, which macOS
+gates with a TCC grant the user gives the signed bundle, not with an entitlement.
+Its SwiftPM product is `OpenZonrApp` while its bundle is `OpenZonr.app`, so the
+adapter reads `Sources/OpenZonrApp/Info.plist` and names the Mach-O
+`OpenZonrApp`; the shared build step already derives both from the profile's
+`executable`, so no adapter change was needed. Like `openswitchr`, `openzonr`
+publishes `OpenZonr-{version}.dmg` as a `copy_of` the notarized DMG, because
+AppUpdater accepts only an asset named exactly `<repository>-<semver>.dmg`. No
+`GitHubAttestationPolicy` applies, as for the other AppUpdater apps.
 
 The `openpromptr` profile also links AppUpdater but is not a menu-bar app —
 it is a regular windowed app whose `Info.plist` lives at `Config/Info.plist`

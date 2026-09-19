@@ -95,7 +95,7 @@ the last job.
   not a secret.
 - **swiftpm** — `swift build`-driven. `assemble_menu_bar_swiftpm` is shared
   by menu-bar apps that link AppUpdater and enforce `LSUIElement`
-  (`opendefendrwatchr`, `openzombr`); `assemble_openpromptr` is its own
+  (`opendefendrwatchr`, `openzombr`, `openzonr`); `assemble_openpromptr` is its own
   adapter for a regular windowed app whose `Info.plist` lives at
   `Config/Info.plist` rather than `Sources/<product>/Info.plist`;
   `assemble_openwritr`/`assemble_openswitchr` are simpler, dependency-light
