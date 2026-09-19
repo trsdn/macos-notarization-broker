@@ -301,14 +301,14 @@
       ]
     },
     "openlens": {
-      "repository": "trsdn/OpenLens",
+      "repository": "trsdn/OpenCamraHub",
       "repository_id": 1341576271,
       "build_adapter": "openlens-xcode",
       "dependency_lock": "locks/openlens-Package.resolved",
       "team_id": "G69Z5BNY97",
       "bundle_name": "OpenLens.app",
       "bundle_identifier": "com.trsdn.openlens",
-      "bundle_display_name": "OpenLens",
+      "bundle_display_name": "OpenCamraHub",
       "executable": "OpenLens",
       "package_type": "APPL",
       "architectures": [
@@ -336,7 +336,7 @@
           "path": "Contents/Resources/AppUpdater_AppUpdater.bundle"
         }
       ],
-      "dmg_volume_name": "OpenLens",
+      "dmg_volume_name": "OpenCamraHub",
       "max_archive_bytes": 134217728,
       "max_uncompressed_bytes": 268435456,
       "max_files": 2000,
