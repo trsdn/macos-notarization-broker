@@ -220,6 +220,7 @@ if ! gh release view "$tag" --repo "$source_repository" >/dev/null 2>&1; then
 
   printf '%s\n' "$notes" | gh release create "$tag" \
     --repo "$source_repository" \
+    --title "$tag" \
     --verify-tag \
     --notes-file -
 fi
