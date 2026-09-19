@@ -215,6 +215,30 @@ source-committed `Resources/AppIcon.icns` into the built bundle, since this
 adapter (like `assemble_openwritr`) assembles the tree itself rather than
 inheriting one an Xcode build already produced.
 
+The `openswitchr` profile links AppUpdater and ships localized strings, so its
+`assemble_openswitchr` build step:
+
+- requires the source `Package.resolved` to equal the reviewed
+  `locks/openswitchr-Package.resolved`, both before and after compilation, and
+  builds with `--only-use-versions-from-resolved-file`;
+- copies only the declared, data-only `AppUpdater_AppUpdater.bundle`;
+- copies the `*.lproj` directories out of OpenSwitchr's own SwiftPM resource
+  bundles into `Contents/Resources`, and does **not** ship those bundles: the app
+  resolves strings against its main bundle, and an undeclared nested bundle is
+  refused. A resource bundle is laid out flat or under `Contents/Resources`
+  depending on the SwiftPM build system, so every `*.lproj` beneath it is found;
+  a link or special file inside one is refused rather than followed. The two
+  modules use different string table names, so their directories merge;
+- bundles the source's `THIRD_PARTY_NOTICES.txt` and `LICENSE`, because
+  AppUpdater's dependency (Version, Apache-2.0) asks for its license to travel.
+
+The profile also publishes `OpenSwitchr-{version}.dmg` as a `copy_of` the notarized
+DMG: AppUpdater accepts only an asset named exactly `<repository>-<semver>.dmg`.
+No `GitHubAttestationPolicy` applies, as for the other AppUpdater apps. The
+broker-owned entitlements are unchanged: `com.apple.security.automation.apple-events`
+only. AppUpdater's download and install need no entitlement, since the app is not
+sandboxed.
+
 The `openconnct` profile builds AppUpdater from the source's `Update/` SwiftPM
 package through the committed Makefile. Before `make` runs, the build step:
 
