@@ -1573,12 +1573,11 @@ class BuildAdapterTests(unittest.TestCase):
         self.assertIn("build", build)
         self.assertIn(f"DEVELOPMENT_TEAM={profile['team_id']}", build)
 
-    def test_openlens_declares_only_the_appupdater_resource_bundle(self) -> None:
+    def test_openlens_declares_no_resource_bundles(self) -> None:
+        # OpenCamraHub (profile openlens) dropped AppUpdater: a sandboxed app
+        # cannot install its own updates, so nothing embeds its resource bundle.
         profile = broker.get_profile("openlens")
-        self.assertEqual(
-            profile["nested_resource_bundles"],
-            [{"path": "Contents/Resources/AppUpdater_AppUpdater.bundle"}],
-        )
+        self.assertNotIn("nested_resource_bundles", profile)
         lock = json.loads(broker.safe_profile_path(profile["dependency_lock"]).read_text())
         self.assertEqual(
             {pin["identity"]: pin["state"]["revision"] for pin in lock["pins"]},
