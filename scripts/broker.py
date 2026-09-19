@@ -1030,18 +1030,29 @@ def assemble_openswitchr(source: Path, work: Path, profile: dict[str, Any]) -> P
 
 
 def copy_openswitchr_locales(bin_path: Path, resources: Path) -> None:
-    """Copy the compiled `*.lproj` directories of OpenSwitchr's own resource bundles.
+    """Put OpenSwitchr's compiled `*.lproj` directories into Contents/Resources.
 
-    A resource bundle is laid out either flat or under Contents/Resources depending on
-    the SwiftPM build system, so every `*.lproj` beneath it is found rather than one
-    assumed path. Only regular files and directories are accepted: a link inside a
-    locale directory could point outside the bundle, and preflight would reject the
-    application for it anyway, so it is refused here with a clearer message.
+    Whether SwiftPM compiles a String Catalog depends on its build backend: the newer
+    one emits `*.lproj`, the one on the hosted runner only copies the raw `.xcstrings`
+    into the resource bundle. Both are handled, so the result never depends on which
+    toolchain built it. A bundle that yields no locale at all is an error, because
+    silently shipping an English-only app was exactly the failure this guards against.
+
+    A resource bundle is laid out either flat or under Contents/Resources, so every
+    `*.lproj` or `.xcstrings` beneath it is found rather than one assumed path. Only
+    regular files and directories are accepted: a link inside a locale directory could
+    point outside the bundle, and preflight would reject the application for it anyway,
+    so it is refused here with a clearer message.
     """
-    for bundle in sorted(bin_path.glob("OpenSwitchr_*.bundle")):
+    bundles = sorted(bin_path.glob("OpenSwitchr_*.bundle"))
+    if not bundles:
+        fail("SwiftPM produced no OpenSwitchr resource bundles, so no localization can ship.")
+    for bundle in bundles:
         if bundle.is_symlink() or not bundle.is_dir():
             fail(f"OpenSwitchr resource bundle is missing or unsafe: {bundle.name}")
-        for locale in sorted(bundle.rglob("*.lproj")):
+        locales = sorted(bundle.rglob("*.lproj"))
+        catalogs = sorted(bundle.rglob("*.xcstrings"))
+        for locale in locales:
             if locale.is_symlink() or not locale.is_dir():
                 fail(f"OpenSwitchr locale directory is unsafe: {locale.name}")
             for path in locale.rglob("*"):
@@ -1049,6 +1060,13 @@ def copy_openswitchr_locales(bin_path: Path, resources: Path) -> None:
                 if not (stat.S_ISREG(mode) or stat.S_ISDIR(mode)):
                     fail(f"OpenSwitchr locale contains a link or special file: {path.name}")
             shutil.copytree(locale, resources / locale.name, dirs_exist_ok=True, symlinks=True)
+        if not locales:
+            for catalog in catalogs:
+                if catalog.is_symlink() or not catalog.is_file():
+                    fail(f"OpenSwitchr string catalog is unsafe: {catalog.name}")
+                run(["xcrun", "xcstringstool", "compile", str(catalog), "--output-directory", str(resources)])
+    if not (resources / "de.lproj").is_dir():
+        fail("OpenSwitchr has no German localization after assembly; refusing to ship without it.")
 
 
 def assemble_subvocal(source: Path, work: Path, profile: dict[str, Any]) -> Path:
