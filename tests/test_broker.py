@@ -90,6 +90,7 @@ class ProfileTests(unittest.TestCase):
                 "openswitchr",
                 "openwritr",
                 "openzombr",
+                "openzonr",
                 "ptionsplus",
                 "spacemender",
                 "subvocal",
@@ -103,6 +104,7 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(profiles["md2loop"]["repository_id"], 1168645937)
         self.assertEqual(profiles["opendefendrwatchr"]["repository_id"], 1342759464)
         self.assertEqual(profiles["openzombr"]["repository_id"], 1350175894)
+        self.assertEqual(profiles["openzonr"]["repository_id"], 1348990573)
         self.assertEqual(profiles["openconnct"]["repository_id"], 1342923126)
         self.assertEqual(profiles["openswitchr"]["repository_id"], 1342585430)
         self.assertEqual(profiles["openwritr"]["repository_id"], 1165782217)
@@ -133,6 +135,14 @@ class ProfileTests(unittest.TestCase):
                 "OpenZombr-v{version}-macOS-arm64.zip",
                 "OpenZombr-v{version}-macOS-arm64.dmg",
                 "OpenZombr-{version}.dmg",
+            ],
+        )
+        self.assertEqual(
+            names["openzonr"],
+            [
+                "OpenZonr-v{version}-macOS-arm64.zip",
+                "OpenZonr-v{version}-macOS-arm64.dmg",
+                "OpenZonr-{version}.dmg",
             ],
         )
         self.assertEqual(
@@ -1621,7 +1631,7 @@ class BuildAdapterTests(unittest.TestCase):
         return build
 
     def test_menu_bar_apps_build_from_the_reviewed_lock_and_ship_the_updater_bundle(self) -> None:
-        for name in ("opendefendrwatchr", "openzombr"):
+        for name in ("opendefendrwatchr", "openzombr", "openzonr"):
             with self.subTest(profile=name), tempfile.TemporaryDirectory() as temporary:
                 profile = broker.get_profile(name)
                 root = Path(temporary)
@@ -1643,7 +1653,7 @@ class BuildAdapterTests(unittest.TestCase):
                 self.assertEqual(info["CFBundleShortVersionString"], "1.2.3")
 
     def test_menu_bar_apps_reject_an_unreviewed_lock(self) -> None:
-        for name in ("opendefendrwatchr", "openzombr"):
+        for name in ("opendefendrwatchr", "openzombr", "openzonr"):
             with self.subTest(profile=name), tempfile.TemporaryDirectory() as temporary:
                 profile = broker.get_profile(name)
                 root = Path(temporary)
@@ -1655,6 +1665,45 @@ class BuildAdapterTests(unittest.TestCase):
                 ):
                     with self.assertRaises(broker.BrokerError):
                         broker.assemble_menu_bar_swiftpm(source, work, profile, "1.2.3")
+
+    def test_openzonr_declares_the_lock_the_updater_bundle_and_the_updater_asset(self) -> None:
+        profile = broker.get_profile("openzonr")
+        self.assertEqual(profile["build_adapter"], "openzonr-swiftpm")
+        self.assertEqual(profile["dependency_lock"], "locks/openzonr-Package.resolved")
+        self.assertEqual(
+            profile["nested_resource_bundles"],
+            [{"path": "Contents/Resources/AppUpdater_AppUpdater.bundle"}],
+        )
+        # The SwiftPM product is OpenZonrApp while the bundle is OpenZonr.app, so the
+        # adapter reads Sources/OpenZonrApp/Info.plist and names the Mach-O accordingly.
+        self.assertEqual(profile["executable"], "OpenZonrApp")
+        self.assertEqual(profile["bundle_name"], "OpenZonr.app")
+        self.assertEqual(profile["bundle_identifier"], "com.trsdn.openzonr")
+        # AppUpdater only accepts an asset named exactly <repo>-<semver>.dmg, so it is a
+        # copy of the notarized DMG rather than a second build.
+        self.assertIn(
+            {
+                "type": "dmg",
+                "name": "OpenZonr-{version}.dmg",
+                "copy_of": "OpenZonr-v{version}-macOS-arm64.dmg",
+            },
+            profile["artifacts"],
+        )
+        lock = json.loads(broker.safe_profile_path(profile["dependency_lock"]).read_text())
+        self.assertEqual(
+            {pin["identity"]: pin["state"]["revision"] for pin in lock["pins"]},
+            {
+                "appupdater": "4826e7205ed0159347de84b19960f4ba0e535504",
+                "version": "3043fcd2a50375db76d89ff206a612471833d1c2",
+            },
+        )
+
+    def test_openzonr_entitlements_stay_empty(self) -> None:
+        # Accessibility is a TCC grant, not an entitlement, so the broker signs OpenZonr
+        # with no entitlements at all, exactly like its menu bar siblings.
+        profile = broker.get_profile("openzonr")
+        with broker.safe_profile_path(profile["entitlements"]).open("rb") as handle:
+            self.assertEqual(plistlib.load(handle), {})
 
     def test_openswitchr_declares_the_lock_the_updater_bundle_and_the_updater_asset(self) -> None:
         profile = broker.get_profile("openswitchr")
