@@ -147,6 +147,7 @@ class ProfileTests(unittest.TestCase):
             [
                 "OpenSwitchr-v{version}-macOS-arm64.zip",
                 "OpenSwitchr-v{version}-macOS-arm64.dmg",
+                "OpenSwitchr-{version}.dmg",
             ],
         )
         self.assertEqual(names["ptionsplus"], ["Ptions+.zip", "Ptions+.dmg"])
@@ -1654,6 +1655,123 @@ class BuildAdapterTests(unittest.TestCase):
                 ):
                     with self.assertRaises(broker.BrokerError):
                         broker.assemble_menu_bar_swiftpm(source, work, profile, "1.2.3")
+
+    def test_openswitchr_declares_the_lock_the_updater_bundle_and_the_updater_asset(self) -> None:
+        profile = broker.get_profile("openswitchr")
+        self.assertEqual(
+            profile["nested_resource_bundles"],
+            [{"path": "Contents/Resources/AppUpdater_AppUpdater.bundle"}],
+        )
+        # AppUpdater only accepts an asset named exactly <repo>-<semver>.dmg, so it is a
+        # copy of the notarized DMG rather than a second build.
+        self.assertIn(
+            {
+                "type": "dmg",
+                "name": "OpenSwitchr-{version}.dmg",
+                "copy_of": "OpenSwitchr-v{version}-macOS-arm64.dmg",
+            },
+            profile["artifacts"],
+        )
+        lock = json.loads(broker.safe_profile_path(profile["dependency_lock"]).read_text())
+        self.assertEqual(
+            {pin["identity"]: pin["state"]["revision"] for pin in lock["pins"]},
+            {
+                "appupdater": "4826e7205ed0159347de84b19960f4ba0e535504",
+                "version": "3043fcd2a50375db76d89ff206a612471833d1c2",
+            },
+        )
+
+    def openswitchr_source(self, root: Path, profile: dict, lock: str) -> Path:
+        source = root / "source"
+        source.mkdir(parents=True)
+        (source / "Package.resolved").write_text(lock, encoding="utf-8")
+        with (source / "Info.plist").open("wb") as handle:
+            plistlib.dump({"CFBundleIdentifier": profile["bundle_identifier"]}, handle)
+        (source / "THIRD_PARTY_NOTICES.txt").write_text("notices", encoding="utf-8")
+        (source / "LICENSE").write_text("MIT", encoding="utf-8")
+        return source
+
+    def fake_openswitchr_build(self, root: Path, calls: list, *, symlink: bool = False):  # type: ignore[no-untyped-def]
+        def build(source, product, require_lock):  # type: ignore[no-untyped-def]
+            calls.append((product, require_lock))
+            bin_dir = root / "bin"
+            updater = bin_dir / "AppUpdater_AppUpdater.bundle"
+            updater.mkdir(parents=True, exist_ok=True)
+            (updater / "tuf-root.json").write_text("{}", encoding="utf-8")
+            # SwiftPM lays a resource bundle out either flat or under Contents/Resources
+            # depending on the build system; the adapter has to cope with both.
+            app_bundle = bin_dir / "OpenSwitchr_OpenSwitchr.bundle" / "Contents" / "Resources"
+            (app_bundle / "de.lproj").mkdir(parents=True, exist_ok=True)
+            (app_bundle / "de.lproj" / "Localizable.strings").write_text("a", encoding="utf-8")
+            (app_bundle / "en.lproj").mkdir(exist_ok=True)
+            (app_bundle / "en.lproj" / "Localizable.stringsdict").write_text("b", encoding="utf-8")
+            ui_bundle = bin_dir / "OpenSwitchr_OpenSwitchrUI.bundle"
+            (ui_bundle / "de.lproj").mkdir(parents=True, exist_ok=True)
+            (ui_bundle / "de.lproj" / "UI.strings").write_text("c", encoding="utf-8")
+            if symlink:
+                (ui_bundle / "de.lproj" / "escape").symlink_to("/etc/hosts")
+            (bin_dir / product).write_bytes(b"binary")
+            return bin_dir / product
+
+        return build
+
+    def test_openswitchr_builds_from_the_reviewed_lock_and_ships_updater_locales_and_notices(
+        self,
+    ) -> None:
+        profile = broker.get_profile("openswitchr")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            lock = broker.safe_profile_path(profile["dependency_lock"]).read_text()
+            source = self.openswitchr_source(root, profile, lock)
+            work = root / "work"
+            work.mkdir()
+            calls: list = []
+            with mock.patch.object(
+                broker, "swift_build", side_effect=self.fake_openswitchr_build(root, calls)
+            ):
+                app = broker.assemble_openswitchr(source, work, profile)
+            self.assertEqual(calls, [("OpenSwitchr", True)])
+            resources = app / "Contents" / "Resources"
+            self.assertTrue((resources / "AppUpdater_AppUpdater.bundle" / "tuf-root.json").is_file())
+            # Both modules' tables land in one lproj, merged rather than overwritten.
+            self.assertTrue((resources / "de.lproj" / "Localizable.strings").is_file())
+            self.assertTrue((resources / "de.lproj" / "UI.strings").is_file())
+            self.assertTrue((resources / "en.lproj" / "Localizable.stringsdict").is_file())
+            self.assertEqual((resources / "THIRD_PARTY_NOTICES.txt").read_text(), "notices")
+            self.assertEqual((resources / "LICENSE").read_text(), "MIT")
+            # The localized resources are not shipped as nested bundles: the app resolves
+            # strings against its main bundle, and an undeclared nested bundle is refused.
+            self.assertFalse((resources / "OpenSwitchr_OpenSwitchr.bundle").exists())
+            self.assertFalse((resources / "OpenSwitchr_OpenSwitchrUI.bundle").exists())
+
+    def test_openswitchr_rejects_an_unreviewed_lock(self) -> None:
+        profile = broker.get_profile("openswitchr")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = self.openswitchr_source(root, profile, '{"pins": [], "version": 3}')
+            work = root / "work"
+            work.mkdir()
+            with mock.patch.object(
+                broker, "swift_build", side_effect=AssertionError("must not build")
+            ):
+                with self.assertRaises(broker.BrokerError):
+                    broker.assemble_openswitchr(source, work, profile)
+
+    def test_openswitchr_refuses_a_symlink_hidden_in_a_locale_directory(self) -> None:
+        profile = broker.get_profile("openswitchr")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            lock = broker.safe_profile_path(profile["dependency_lock"]).read_text()
+            source = self.openswitchr_source(root, profile, lock)
+            work = root / "work"
+            work.mkdir()
+            with mock.patch.object(
+                broker,
+                "swift_build",
+                side_effect=self.fake_openswitchr_build(root, [], symlink=True),
+            ):
+                with self.assertRaises(broker.BrokerError):
+                    broker.assemble_openswitchr(source, work, profile)
 
     def openpromptr_source(self, root: Path, profile: dict, lock: str) -> Path:
         # Unlike the menu-bar apps, OpenPromptr keeps its Info.plist at Config/

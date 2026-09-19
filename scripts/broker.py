@@ -973,13 +973,44 @@ def assemble_menu_bar_swiftpm(
 
 
 def assemble_openswitchr(source: Path, work: Path, profile: dict[str, Any]) -> Path:
-    executable = swift_build(source, "OpenSwitchr", require_lock=False)
+    """Assemble OpenSwitchr, which links AppUpdater and ships localized strings.
+
+    The build is pinned to the broker's reviewed dependency lock, like the sibling
+    menu bar apps. On top of that layout OpenSwitchr has two things the siblings do not:
+
+    - String Catalogs. SwiftPM compiles each target's catalog into its own resource
+      bundle (`OpenSwitchr_OpenSwitchr`, `OpenSwitchr_OpenSwitchrUI`), but the app
+      resolves strings against its *main* bundle, so the `*.lproj` directories are
+      copied into Contents/Resources rather than the bundles being shipped. The two
+      modules use different table names, so their directories merge instead of
+      overwriting each other.
+    - Third-party notices. AppUpdater and its dependency carry licenses whose terms
+      travel with the software, so THIRD_PARTY_NOTICES.txt and LICENSE are bundled.
+    """
+    expected_lock = safe_profile_path(profile["dependency_lock"])
+    lock = ensure_source_file(source, "Package.resolved")
+    if json.loads(lock.read_text()) != json.loads(expected_lock.read_text()):
+        fail("OpenSwitchr Package.resolved differs from the reviewed broker dependency lock.")
+    executable = swift_build(source, "OpenSwitchr", require_lock=True)
+    if json.loads(lock.read_text()) != json.loads(expected_lock.read_text()):
+        fail("OpenSwitchr dependency lock changed during compilation.")
     app = work / profile["bundle_name"]
     macos = app / "Contents" / "MacOS"
     resources = app / "Contents" / "Resources"
     macos.mkdir(parents=True)
     resources.mkdir(parents=True)
     shutil.copy2(executable, macos / profile["executable"])
+    for spec in nested_resource_bundles(profile):
+        bundle = executable.parent / Path(spec["path"]).name
+        if bundle.is_symlink() or not bundle.is_dir():
+            fail(f"Required SwiftPM resource bundle is missing or unsafe: {bundle.name}")
+        # Preserve links and permissions so preflight rejects unsafe content instead
+        # of silently following links or normalizing executable resources.
+        shutil.copytree(bundle, app / spec["path"], symlinks=True)
+    make_resource_bundles_writable(app, profile)
+    copy_openswitchr_locales(executable.parent, resources)
+    for name in ("THIRD_PARTY_NOTICES.txt", "LICENSE"):
+        shutil.copy2(ensure_source_file(source, name), resources / name)
     info_path = app / "Contents" / "Info.plist"
     shutil.copy2(ensure_source_file(source, "Info.plist"), info_path)
     with info_path.open("rb") as handle:
@@ -996,6 +1027,28 @@ def assemble_openswitchr(source: Path, work: Path, profile: dict[str, Any]) -> P
     with info_path.open("wb") as handle:
         plistlib.dump(info, handle, sort_keys=True)
     return app
+
+
+def copy_openswitchr_locales(bin_path: Path, resources: Path) -> None:
+    """Copy the compiled `*.lproj` directories of OpenSwitchr's own resource bundles.
+
+    A resource bundle is laid out either flat or under Contents/Resources depending on
+    the SwiftPM build system, so every `*.lproj` beneath it is found rather than one
+    assumed path. Only regular files and directories are accepted: a link inside a
+    locale directory could point outside the bundle, and preflight would reject the
+    application for it anyway, so it is refused here with a clearer message.
+    """
+    for bundle in sorted(bin_path.glob("OpenSwitchr_*.bundle")):
+        if bundle.is_symlink() or not bundle.is_dir():
+            fail(f"OpenSwitchr resource bundle is missing or unsafe: {bundle.name}")
+        for locale in sorted(bundle.rglob("*.lproj")):
+            if locale.is_symlink() or not locale.is_dir():
+                fail(f"OpenSwitchr locale directory is unsafe: {locale.name}")
+            for path in locale.rglob("*"):
+                mode = path.lstat().st_mode
+                if not (stat.S_ISREG(mode) or stat.S_ISDIR(mode)):
+                    fail(f"OpenSwitchr locale contains a link or special file: {path.name}")
+            shutil.copytree(locale, resources / locale.name, dirs_exist_ok=True, symlinks=True)
 
 
 def assemble_subvocal(source: Path, work: Path, profile: dict[str, Any]) -> Path:
