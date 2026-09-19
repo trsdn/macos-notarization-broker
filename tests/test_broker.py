@@ -1757,6 +1757,60 @@ class BuildAdapterTests(unittest.TestCase):
                 with self.assertRaises(broker.BrokerError):
                     broker.assemble_openswitchr(source, work, profile)
 
+    def test_openswitchr_compiles_catalogs_when_the_toolchain_only_copies_them(self) -> None:
+        profile = broker.get_profile("openswitchr")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            lock = broker.safe_profile_path(profile["dependency_lock"]).read_text()
+            source = self.openswitchr_source(root, profile, lock)
+            work = root / "work"
+            work.mkdir()
+
+            def build(source_arg, product, require_lock):  # type: ignore[no-untyped-def]
+                bin_dir = root / "bin"
+                bundle = bin_dir / "OpenSwitchr_OpenSwitchr.bundle"
+                bundle.mkdir(parents=True, exist_ok=True)
+                (bundle / "Localizable.xcstrings").write_text("{}", encoding="utf-8")
+                (bin_dir / "AppUpdater_AppUpdater.bundle").mkdir(exist_ok=True)
+                (bin_dir / product).write_bytes(b"binary")
+                return bin_dir / product
+
+            compiled: list = []
+
+            def fake_run(command, **kwargs):  # type: ignore[no-untyped-def]
+                compiled.append(command)
+                out = Path(command[command.index("--output-directory") + 1])
+                (out / "de.lproj").mkdir(parents=True, exist_ok=True)
+                (out / "de.lproj" / "Localizable.strings").write_text("x", encoding="utf-8")
+
+            with mock.patch.object(broker, "swift_build", side_effect=build), mock.patch.object(
+                broker, "run", side_effect=fake_run
+            ):
+                app = broker.assemble_openswitchr(source, work, profile)
+            self.assertEqual(len(compiled), 1)
+            self.assertEqual(compiled[0][:3], ["xcrun", "xcstringstool", "compile"])
+            self.assertTrue((app / "Contents" / "Resources" / "de.lproj" / "Localizable.strings").is_file())
+
+    def test_openswitchr_refuses_to_ship_without_a_german_localization(self) -> None:
+        profile = broker.get_profile("openswitchr")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            lock = broker.safe_profile_path(profile["dependency_lock"]).read_text()
+            source = self.openswitchr_source(root, profile, lock)
+            work = root / "work"
+            work.mkdir()
+
+            def build(source_arg, product, require_lock):  # type: ignore[no-untyped-def]
+                bin_dir = root / "bin"
+                (bin_dir / "OpenSwitchr_OpenSwitchr.bundle").mkdir(parents=True, exist_ok=True)
+                (bin_dir / "AppUpdater_AppUpdater.bundle").mkdir(exist_ok=True)
+                (bin_dir / product).write_bytes(b"binary")
+                return bin_dir / product
+
+            with mock.patch.object(broker, "swift_build", side_effect=build):
+                with self.assertRaises(broker.BrokerError):
+                    broker.assemble_openswitchr(source, work, profile)
+
     def test_openswitchr_refuses_a_symlink_hidden_in_a_locale_directory(self) -> None:
         profile = broker.get_profile("openswitchr")
         with tempfile.TemporaryDirectory() as temporary:
