@@ -977,7 +977,7 @@ def assemble_menu_bar_swiftpm(
     return app
 
 
-def assemble_openswitchr(source: Path, work: Path, profile: dict[str, Any]) -> Path:
+def assemble_openswitchr(source: Path, work: Path, profile: dict[str, Any], version: str) -> Path:
     """Assemble OpenSwitchr, which links AppUpdater and ships localized strings.
 
     The build is pinned to the broker's reviewed dependency lock, like the sibling
@@ -1023,6 +1023,8 @@ def assemble_openswitchr(source: Path, work: Path, profile: dict[str, Any]) -> P
     info.update(
         {
             "CFBundleExecutable": profile["executable"],
+            "CFBundleShortVersionString": version,
+            "CFBundleVersion": version,
             "CFBundlePackageType": profile["package_type"],
             "CFBundleDisplayName": profile["bundle_display_name"],
             "NSHighResolutionCapable": True,
@@ -1525,7 +1527,7 @@ def command_build(args: argparse.Namespace) -> None:
         elif adapter == "openlens-xcode":
             built_app = build_openlens(source, work, profile, version, args.build_number)
         elif adapter == "openswitchr-swiftpm":
-            built_app = assemble_openswitchr(source, work, profile)
+            built_app = assemble_openswitchr(source, work, profile, version)
         elif adapter == "openwritr-swiftpm":
             built_app = assemble_openwritr(source, work, profile)
         elif adapter == "printfilemanager-xcode":

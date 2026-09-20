@@ -1777,7 +1777,7 @@ class BuildAdapterTests(unittest.TestCase):
             with mock.patch.object(
                 broker, "swift_build", side_effect=self.fake_openswitchr_build(root, calls)
             ):
-                app = broker.assemble_openswitchr(source, work, profile)
+                app = broker.assemble_openswitchr(source, work, profile, "1.2.3")
             self.assertEqual(calls, [("OpenSwitchr", True)])
             resources = app / "Contents" / "Resources"
             self.assertTrue((resources / "AppUpdater_AppUpdater.bundle" / "tuf-root.json").is_file())
@@ -1785,6 +1785,11 @@ class BuildAdapterTests(unittest.TestCase):
             self.assertTrue((resources / "de.lproj" / "Localizable.strings").is_file())
             self.assertTrue((resources / "de.lproj" / "UI.strings").is_file())
             self.assertTrue((resources / "en.lproj" / "Localizable.stringsdict").is_file())
+            with (app / "Contents" / "Info.plist").open("rb") as handle:
+                stamped = plistlib.load(handle)
+            # The version comes from the release tag, never from the source Info.plist.
+            self.assertEqual(stamped["CFBundleShortVersionString"], "1.2.3")
+            self.assertEqual(stamped["CFBundleVersion"], "1.2.3")
             self.assertEqual((resources / "THIRD_PARTY_NOTICES.txt").read_text(), "notices")
             self.assertEqual((resources / "LICENSE").read_text(), "MIT")
             # The localized resources are not shipped as nested bundles: the app resolves
@@ -1803,7 +1808,7 @@ class BuildAdapterTests(unittest.TestCase):
                 broker, "swift_build", side_effect=AssertionError("must not build")
             ):
                 with self.assertRaises(broker.BrokerError):
-                    broker.assemble_openswitchr(source, work, profile)
+                    broker.assemble_openswitchr(source, work, profile, "1.2.3")
 
     def test_openswitchr_compiles_catalogs_when_the_toolchain_only_copies_them(self) -> None:
         profile = broker.get_profile("openswitchr")
@@ -1834,7 +1839,7 @@ class BuildAdapterTests(unittest.TestCase):
             with mock.patch.object(broker, "swift_build", side_effect=build), mock.patch.object(
                 broker, "run", side_effect=fake_run
             ):
-                app = broker.assemble_openswitchr(source, work, profile)
+                app = broker.assemble_openswitchr(source, work, profile, "1.2.3")
             self.assertEqual(len(compiled), 1)
             self.assertEqual(compiled[0][:3], ["xcrun", "xcstringstool", "compile"])
             self.assertTrue((app / "Contents" / "Resources" / "de.lproj" / "Localizable.strings").is_file())
@@ -1857,7 +1862,7 @@ class BuildAdapterTests(unittest.TestCase):
 
             with mock.patch.object(broker, "swift_build", side_effect=build):
                 with self.assertRaises(broker.BrokerError):
-                    broker.assemble_openswitchr(source, work, profile)
+                    broker.assemble_openswitchr(source, work, profile, "1.2.3")
 
     def test_openswitchr_refuses_a_symlink_hidden_in_a_locale_directory(self) -> None:
         profile = broker.get_profile("openswitchr")
@@ -1873,7 +1878,7 @@ class BuildAdapterTests(unittest.TestCase):
                 side_effect=self.fake_openswitchr_build(root, [], symlink=True),
             ):
                 with self.assertRaises(broker.BrokerError):
-                    broker.assemble_openswitchr(source, work, profile)
+                    broker.assemble_openswitchr(source, work, profile, "1.2.3")
 
     def openpromptr_source(self, root: Path, profile: dict, lock: str) -> Path:
         # Unlike the menu-bar apps, OpenPromptr keeps its Info.plist at Config/
