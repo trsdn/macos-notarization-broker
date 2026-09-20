@@ -1606,15 +1606,23 @@ class BuildAdapterTests(unittest.TestCase):
             },
         )
 
-    def menu_bar_source(self, root: Path, profile: dict, lock: str) -> Path:
+    def menu_bar_source(
+        self, root: Path, profile: dict, lock: str, *, icon: str | None = None
+    ) -> Path:
         product = profile["executable"]
         source = root / "source"
         (source / "Sources" / product).mkdir(parents=True)
         (source / "Package.resolved").write_text(lock, encoding="utf-8")
+        info: dict = {"CFBundleIdentifier": profile["bundle_identifier"], "LSUIElement": True}
+        if icon is not None:
+            # A source repository that ships an icon names it in its own Info.plist;
+            # the broker only copies the file the profile points at.
+            info["CFBundleIconFile"] = Path(icon).stem
+            path = source / icon
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"icns" + b"\x00" * 60)
         with (source / "Sources" / product / "Info.plist").open("wb") as handle:
-            plistlib.dump(
-                {"CFBundleIdentifier": profile["bundle_identifier"], "LSUIElement": True}, handle
-            )
+            plistlib.dump(info, handle)
         return source
 
     def fake_swift_build(self, root: Path, profile: dict, calls: list):  # type: ignore[no-untyped-def]
@@ -1635,7 +1643,8 @@ class BuildAdapterTests(unittest.TestCase):
                 profile = broker.get_profile(name)
                 root = Path(temporary)
                 lock = broker.safe_profile_path(profile["dependency_lock"]).read_text()
-                source = self.menu_bar_source(root, profile, lock)
+                # Only a profile that declares `app_icon` needs one in its checkout.
+                source = self.menu_bar_source(root, profile, lock, icon=profile.get("app_icon"))
                 work = root / "work"
                 work.mkdir()
                 calls: list = []
@@ -1696,6 +1705,48 @@ class BuildAdapterTests(unittest.TestCase):
                 "version": "3043fcd2a50375db76d89ff206a612471833d1c2",
             },
         )
+
+    def test_a_menu_bar_profile_that_declares_an_app_icon_ships_it(self) -> None:
+        # OpenZonr's Info.plist names an icon the SwiftPM build never puts in the
+        # bundle, so without this the release would show a generic icon.
+        with tempfile.TemporaryDirectory() as temporary:
+            profile = broker.get_profile("openzonr")
+            root = Path(temporary)
+            lock = broker.safe_profile_path(profile["dependency_lock"]).read_text()
+            source = self.menu_bar_source(root, profile, lock, icon=profile["app_icon"])
+            work = root / "work"
+            work.mkdir()
+            with mock.patch.object(
+                broker, "swift_build", side_effect=self.fake_swift_build(root, profile, [])
+            ):
+                app = broker.assemble_menu_bar_swiftpm(source, work, profile, "1.2.3")
+            icon = app / "Contents" / "Resources" / "AppIcon.icns"
+            self.assertTrue(icon.is_file())
+            self.assertEqual(icon.read_bytes(), (source / profile["app_icon"]).read_bytes())
+            with (app / "Contents" / "Info.plist").open("rb") as handle:
+                self.assertEqual(plistlib.load(handle)["CFBundleIconFile"], "AppIcon")
+
+    def test_a_menu_bar_profile_without_an_app_icon_ships_none(self) -> None:
+        # The field is optional, and the two siblings that omit it must assemble
+        # exactly as they did before it existed.
+        for name in ("opendefendrwatchr", "openzombr"):
+            with self.subTest(profile=name), tempfile.TemporaryDirectory() as temporary:
+                profile = broker.get_profile(name)
+                self.assertNotIn("app_icon", profile)
+                root = Path(temporary)
+                lock = broker.safe_profile_path(profile["dependency_lock"]).read_text()
+                source = self.menu_bar_source(root, profile, lock)
+                work = root / "work"
+                work.mkdir()
+                with mock.patch.object(
+                    broker, "swift_build", side_effect=self.fake_swift_build(root, profile, [])
+                ):
+                    app = broker.assemble_menu_bar_swiftpm(source, work, profile, "1.2.3")
+                resources = app / "Contents" / "Resources"
+                self.assertEqual(sorted(resources.glob("*.icns")), [])
+
+    def test_openzonr_declares_the_source_icon(self) -> None:
+        self.assertEqual(broker.get_profile("openzonr")["app_icon"], "Resources/AppIcon.icns")
 
     def test_openzonr_entitlements_stay_empty(self) -> None:
         # Accessibility is a TCC grant, not an entitlement, so the broker signs OpenZonr
@@ -2372,3 +2423,122 @@ class VolumeIconStagingTests(unittest.TestCase):
 
         with self.assertRaises(broker.BrokerError):
             broker.stage_volume_icon(self.app, self.staging)
+
+
+class SourceAppIconTests(unittest.TestCase):
+    """`app_icon` names a file in an untrusted checkout, so every part of it is checked.
+
+    The field is optional: a profile that omits it assembles exactly as before. A
+    profile that declares one may only ever copy a small, real, regular `.icns`
+    from inside the source checkout, under the name the shipped Info.plist asks
+    for. Everything else fails the build job, long before the signing job exists.
+    """
+
+    ICNS = b"icns" + b"\x00" * 60
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.source = self.root / "source"
+        (self.source / "Resources").mkdir(parents=True)
+        (self.source / "Resources" / "AppIcon.icns").write_bytes(self.ICNS)
+        self.resources = self.root / "Demo.app" / "Contents" / "Resources"
+        self.resources.mkdir(parents=True)
+
+    def copy(self, declared: object = "Resources/AppIcon.icns", icon_file: object = "AppIcon") -> None:
+        profile = {} if declared is None else {"app_icon": declared}
+        info = {} if icon_file is None else {"CFBundleIconFile": icon_file}
+        broker.copy_app_icon(self.source, self.resources, profile, info)
+
+    def assert_rejected(self, **kwargs: object) -> None:
+        with self.assertRaises(broker.BrokerError):
+            self.copy(**kwargs)  # type: ignore[arg-type]
+        self.assertEqual(sorted(self.resources.iterdir()), [])
+
+    def test_the_declared_icon_is_copied_into_contents_resources(self) -> None:
+        self.copy()
+        copied = self.resources / "AppIcon.icns"
+        self.assertTrue(copied.is_file())
+        self.assertEqual(copied.read_bytes(), self.ICNS)
+
+    def test_the_plist_may_name_the_icon_with_or_without_its_extension(self) -> None:
+        # macOS accepts CFBundleIconFile either way, so the broker does too.
+        self.copy(icon_file="AppIcon.icns")
+        self.assertTrue((self.resources / "AppIcon.icns").is_file())
+
+    def test_a_profile_without_the_field_copies_nothing(self) -> None:
+        self.copy(declared=None, icon_file=None)
+        self.assertEqual(sorted(self.resources.iterdir()), [])
+
+    def test_a_traversal_is_rejected(self) -> None:
+        (self.root / "outside.icns").write_bytes(self.ICNS)
+        self.assert_rejected(declared="../outside.icns")
+
+    def test_a_dot_component_is_rejected(self) -> None:
+        self.assert_rejected(declared="Resources/./AppIcon.icns")
+
+    def test_an_absolute_path_is_rejected(self) -> None:
+        self.assert_rejected(declared=str(self.source / "Resources" / "AppIcon.icns"))
+
+    def test_a_non_string_declaration_is_rejected(self) -> None:
+        self.assert_rejected(declared=["Resources/AppIcon.icns"])
+
+    def test_a_symlinked_icon_is_rejected(self) -> None:
+        # The link points inside the checkout, so a containment check made after
+        # resolving the path would accept it. The link itself is what is refused.
+        (self.source / "Resources" / "Link.icns").symlink_to(self.source / "Resources" / "AppIcon.icns")
+        self.assert_rejected(declared="Resources/Link.icns", icon_file="Link")
+
+    def test_a_symlinked_parent_that_leaves_the_checkout_is_rejected(self) -> None:
+        outside = self.root / "outside"
+        outside.mkdir()
+        (outside / "AppIcon.icns").write_bytes(self.ICNS)
+        (self.source / "Elsewhere").symlink_to(outside, target_is_directory=True)
+        self.assert_rejected(declared="Elsewhere/AppIcon.icns")
+
+    def test_a_directory_is_rejected(self) -> None:
+        (self.source / "Resources" / "Folder.icns").mkdir()
+        self.assert_rejected(declared="Resources/Folder.icns", icon_file="Folder")
+
+    def test_a_missing_file_is_rejected(self) -> None:
+        self.assert_rejected(declared="Resources/Absent.icns", icon_file="Absent")
+
+    def test_a_path_that_is_not_an_icns_is_rejected(self) -> None:
+        (self.source / "Resources" / "AppIcon.png").write_bytes(self.ICNS)
+        self.assert_rejected(declared="Resources/AppIcon.png", icon_file="AppIcon.png")
+
+    def test_a_file_that_is_not_an_icns_is_rejected(self) -> None:
+        # Named like an icon, Mach-O inside. Preflight would reject it too, but a
+        # build that cannot succeed should not reach a signing job at all.
+        (self.source / "Resources" / "AppIcon.icns").write_bytes(BundleFixtureMixin.ARM64_MACHO)
+        self.assert_rejected()
+
+    def test_an_oversize_icon_is_rejected(self) -> None:
+        with (self.source / "Resources" / "AppIcon.icns").open("wb") as handle:
+            handle.write(self.ICNS)
+            handle.truncate(broker.APP_ICON_MAX_BYTES + 1)
+        self.assert_rejected()
+
+    def test_an_icon_the_plist_does_not_name_is_rejected(self) -> None:
+        # Shipping an icon the bundle never references is a silent generic-icon
+        # release, which is the failure this field exists to prevent.
+        self.assert_rejected(icon_file="Different")
+
+    def test_a_plist_without_an_icon_key_is_rejected(self) -> None:
+        self.assert_rejected(icon_file=None)
+
+    def test_the_declaration_is_validated_when_the_profiles_load(self) -> None:
+        # A bad path must fail before any job has fetched source, not in the build.
+        for declared in ("../outside.icns", "/etc/AppIcon.icns", "Resources/AppIcon.png", 7):
+            with self.subTest(app_icon=declared), self.assertRaises(broker.BrokerError):
+                broker.validate_app_icon_policy("demo", {"app_icon": declared})
+
+    def test_every_profile_that_declares_an_icon_declares_a_safe_one(self) -> None:
+        declared = {
+            name: profile["app_icon"]
+            for name, profile in broker.load_profiles().items()
+            if "app_icon" in profile
+        }
+        self.assertEqual(declared, {"openzonr": "Resources/AppIcon.icns"})
+

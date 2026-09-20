@@ -201,7 +201,28 @@ step:
 - copies only the declared `AppUpdater_AppUpdater.bundle`, a flat,
   data-only SwiftPM bundle;
 - refuses an Info.plist whose bundle identifier differs from the profile's, or
-  that lacks `LSUIElement`.
+  that lacks `LSUIElement`;
+- copies the source-committed icon a profile names in the optional `app_icon`
+  field, and nothing when a profile omits it.
+
+`app_icon` is a declarative, repository-relative path to one `.icns` file in the
+source checkout — data, never code, and never a glob, a directory or a hook. A
+SwiftPM build puts no icon in the bundle it assembles, so a source `Info.plist`
+declaring `CFBundleIconFile` would otherwise ship a release with a generic icon.
+The field is optional and changes nothing for a profile that omits it. When a
+profile declares one, the build job copies the file into `Contents/Resources`
+before the secretless preflight runs, so the icon is subject to the same walk as
+every other resource: a symlink, an executable bit, a Mach-O or an undeclared
+nested bundle is still rejected there. The declaration is checked on top of that,
+fail-closed, at profile load and again immediately before the copy: the path must
+be relative and free of `..`, `.` and bundle suffixes; it must resolve inside the
+source checkout, so a symlinked parent directory cannot redirect it; it must not
+itself be a symlink, which is checked before resolution rather than after; it
+must be a regular file, not a directory or a device; it must begin with the
+`icns` magic rather than merely end in `.icns`; it must be at most 5 MiB; and its
+file name must equal what the assembled `Info.plist` declares in
+`CFBundleIconFile`, with or without the extension, so an icon that would be
+shipped and never shown fails the build instead. Only `openzonr` declares one.
 
 All three profiles use empty broker-owned entitlements. `openzonr` needs none
 either: OpenZonr drives other windows through the Accessibility API, which macOS
@@ -209,7 +230,11 @@ gates with a TCC grant the user gives the signed bundle, not with an entitlement
 Its SwiftPM product is `OpenZonrApp` while its bundle is `OpenZonr.app`, so the
 adapter reads `Sources/OpenZonrApp/Info.plist` and names the Mach-O
 `OpenZonrApp`; the shared build step already derives both from the profile's
-`executable`, so no adapter change was needed. Like `openswitchr`, `openzonr`
+`executable`, so no adapter change was needed. Its `Info.plist` does declare
+`CFBundleIconFile`, so the profile also declares
+`app_icon: "Resources/AppIcon.icns"` and the shared build step copies that file
+into `Contents/Resources`; its two siblings declare no icon and ship none. Like
+`openswitchr`, `openzonr`
 publishes `OpenZonr-{version}.dmg` as a `copy_of` the notarized DMG, because
 AppUpdater accepts only an asset named exactly `<repository>-<semver>.dmg`. No
 `GitHubAttestationPolicy` applies, as for the other AppUpdater apps.
