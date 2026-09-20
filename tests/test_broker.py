@@ -1737,6 +1737,8 @@ class BuildAdapterTests(unittest.TestCase):
             plistlib.dump({"CFBundleIdentifier": profile["bundle_identifier"]}, handle)
         (source / "THIRD_PARTY_NOTICES.txt").write_text("notices", encoding="utf-8")
         (source / "LICENSE").write_text("MIT", encoding="utf-8")
+        (source / "Resources").mkdir()
+        (source / "Resources" / "AppIcon.icns").write_bytes(b"icns")
         return source
 
     def fake_openswitchr_build(self, root: Path, calls: list, *, symlink: bool = False):  # type: ignore[no-untyped-def]
@@ -1787,6 +1789,9 @@ class BuildAdapterTests(unittest.TestCase):
             self.assertTrue((resources / "en.lproj" / "Localizable.stringsdict").is_file())
             with (app / "Contents" / "Info.plist").open("rb") as handle:
                 stamped = plistlib.load(handle)
+            # The icon is copied in and named by the plist, or the app shows a generic one.
+            self.assertEqual((resources / "AppIcon.icns").read_bytes(), b"icns")
+            self.assertEqual(stamped["CFBundleIconFile"], "AppIcon")
             # The version comes from the release tag, never from the source Info.plist.
             self.assertEqual(stamped["CFBundleShortVersionString"], "1.2.3")
             self.assertEqual(stamped["CFBundleVersion"], "1.2.3")

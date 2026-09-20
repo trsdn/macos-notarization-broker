@@ -1013,6 +1013,10 @@ def assemble_openswitchr(source: Path, work: Path, profile: dict[str, Any], vers
         # of silently following links or normalizing executable resources.
         shutil.copytree(bundle, app / spec["path"], symlinks=True)
     make_resource_bundles_writable(app, profile)
+    # The bundle's icon lives in the source tree, and nothing else puts it in the
+    # bundle: the first two releases shipped without one and showed a generic icon.
+    icon = ensure_source_file(source, "Resources/AppIcon.icns")
+    shutil.copy2(icon, resources / "AppIcon.icns")
     copy_openswitchr_locales(executable.parent, resources)
     for name in ("THIRD_PARTY_NOTICES.txt", "LICENSE"):
         shutil.copy2(ensure_source_file(source, name), resources / name)
@@ -1022,6 +1026,7 @@ def assemble_openswitchr(source: Path, work: Path, profile: dict[str, Any], vers
         info = plistlib.load(handle)
     info.update(
         {
+            "CFBundleIconFile": "AppIcon",
             "CFBundleExecutable": profile["executable"],
             "CFBundleShortVersionString": version,
             "CFBundleVersion": version,
