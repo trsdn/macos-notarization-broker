@@ -138,6 +138,26 @@ the secretless preflight recorded. A profile may also be universal: an entry in
 the preflight verifies the shipped binaries carry exactly those. See
 [SECURITY.md](SECURITY.md#nested-executable-code).
 
+A profile may also declare one source-committed application icon:
+
+```json
+"app_icon": "Resources/AppIcon.icns"
+```
+
+The value is a repository-relative path inside the source checkout. It is
+optional — a profile that omits it ships no icon, exactly as before — and it
+exists because an adapter that assembles the bundle itself, rather than
+inheriting one from an Xcode build, otherwise leaves the source's
+`CFBundleIconFile` pointing at a file nobody copied, and the release shows a
+generic icon. The icon is copied into `Contents/Resources` in the untrusted
+build job, before the secretless preflight sees the bundle, so it is policed
+like every other resource there. The declaration itself is checked hard: the
+path must be relative, free of `..`, inside the checkout after resolution, a
+regular file rather than a link, a directory or a device, a real `.icns` by its
+magic and not merely by its name, no larger than 5 MiB, and named exactly what
+the shipped `Info.plist` asks for in `CFBundleIconFile` (with or without the
+extension, both of which macOS accepts). Anything else fails the build.
+
 Each distributable ships with a `.sha256` file, alongside `provenance.json` and
 `preflight-manifest.json` in the workflow artifact.
 

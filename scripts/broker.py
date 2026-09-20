@@ -109,6 +109,21 @@ RESTRICTED_ENTITLEMENTS = frozenset(
         "keychain-access-groups",
     }
 )
+# A profile may point at one source-committed application icon through the
+# optional `app_icon` field. The value is a repository-relative path inside the
+# source checkout, spelled without "..", without a leading "/" and without a
+# Windows-style drive letter, so it can only ever name a file the checkout
+# already contains. It is data, not code: the icon is copied into
+# Contents/Resources before the secretless preflight sees the bundle, and every
+# existing rule (no symlink, no executable bit, no Mach-O, no undeclared nested
+# bundle) still applies to it there.
+SOURCE_RELATIVE_PATH_PATTERN = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9 ._+-]*(?:/[A-Za-z0-9][A-Za-z0-9 ._+-]*)*$"
+)
+# Icons are small: OpenZonr's is under 600 KiB and Apple's own are smaller
+# still. The cap exists so a source repository cannot inflate a signed bundle
+# through this field; it is generous enough that no plausible .icns hits it.
+APP_ICON_MAX_BYTES = 5 * 1024 * 1024
 PROVISIONING_PROFILE_FIELDS = {"path"}
 # Where an application bundle carries its profile. Apple fixes both the name and
 # the location; nothing else is read at launch.
@@ -205,6 +220,7 @@ def load_profiles() -> dict[str, Any]:
             fail(f"Profile {name} has an invalid Apple Team ID.")
         validate_nested_executable_policy(name, profile)
         validate_nested_resource_bundle_policy(name, profile)
+        validate_app_icon_policy(name, profile)
         if "required_resources" in profile:
             validate_resource_file_policy(name, profile["required_resources"], bundle_relative=True)
         validate_artifact_policy(name, profile["artifacts"])
@@ -413,6 +429,94 @@ def validate_nested_resource_bundle_policy(name: str, profile: dict[str, Any]) -
             if not path.endswith(".bundle"):
                 fail(f"Profile {name} exact resource files require a .bundle path.")
             validate_resource_file_policy(name, spec["files"])
+
+
+def check_app_icon_spelling(label: str, declared: Any) -> str:
+    """The spelling rules for `app_icon`, judged without a source checkout.
+
+    An absolute path, a Windows-style drive letter, a traversal, a "." or ".."
+    component, a path through a bundle directory and anything that is not an
+    `.icns` file are all rejected. Returns the declared path so a caller can use
+    it only after it has passed.
+    """
+    if (
+        not isinstance(declared, str)
+        or not SOURCE_RELATIVE_PATH_PATTERN.fullmatch(declared)
+        or any(part in {".", ".."} for part in declared.split("/"))
+        or any(part.casefold().endswith(NESTED_BUNDLE_SUFFIXES) for part in Path(declared).parts)
+    ):
+        fail(f"{label} declares an unsafe app_icon path: {declared!r}")
+    if not declared.endswith(".icns") or Path(declared).name == ".icns":
+        fail(f"{label} declares an app_icon that is not an .icns file: {declared}")
+    return declared
+
+
+def validate_app_icon_policy(name: str, profile: dict[str, Any]) -> None:
+    """Validate the optional `app_icon` declaration when the profiles load.
+
+    The field is a repository-relative path to one `.icns` file in the source
+    checkout. Everything that can be judged without a checkout is judged here,
+    before any job has fetched source, so a bad declaration never reaches the
+    build job. The rest -- that the file exists, is a regular file, is an icns,
+    is small, and matches the Info.plist -- needs the checkout and is enforced
+    in `copy_app_icon`.
+    """
+    if "app_icon" in profile:
+        check_app_icon_spelling(f"Profile {name}", profile["app_icon"])
+
+
+def copy_app_icon(source: Path, resources: Path, profile: dict[str, Any], info: dict[str, Any]) -> None:
+    """Copy a profile's declared source icon into the bundle it is being assembled into.
+
+    A profile that omits `app_icon` gets no icon and no checks, exactly as before.
+    A profile that declares one gets an icon that the source repository cannot turn
+    into anything else: the path is confined to the checkout after resolution, so a
+    symlinked parent directory cannot redirect it outside; the file itself must be a
+    regular file rather than a link, a directory or a device; it must be a real
+    `.icns` by magic rather than by name, so a Mach-O cannot ride in under an icon's
+    extension; and it must be small.
+
+    The name is also checked against the Info.plist the bundle will actually ship.
+    An icon whose file name does not match `CFBundleIconFile` is dead weight -- the
+    app shows the generic icon and nobody notices until a release is out -- so the
+    mismatch fails the build instead. macOS accepts the key with or without the
+    extension, so both spellings are allowed.
+    """
+    if "app_icon" not in profile:
+        return
+    # Re-checked here rather than trusted from load_profiles: this function copies
+    # into a bundle that is about to be signed, so it does not assume a caller.
+    declared = check_app_icon_spelling("The build profile", profile["app_icon"])
+    # The link check comes first: resolve() would follow the link and then report
+    # the target, so a symlinked icon pointing at a file inside the checkout would
+    # pass a containment check made after resolution.
+    candidate = source / declared
+    if candidate.is_symlink():
+        fail(f"Application icon is a symbolic link: {declared}")
+    icon = candidate.resolve()
+    try:
+        icon.relative_to(source.resolve())
+    except ValueError:
+        fail(f"Application icon escapes the source checkout: {declared}")
+    if icon.is_symlink() or not icon.is_file():
+        fail(f"Application icon is missing or is not a regular file: {declared}")
+    size = icon.stat().st_size
+    if size > APP_ICON_MAX_BYTES:
+        fail(f"Application icon is larger than {APP_ICON_MAX_BYTES} bytes: {declared} ({size})")
+    with icon.open("rb") as handle:
+        if handle.read(4) != b"icns":
+            fail(f"Application icon is not an icns file: {declared}")
+    # The declared spelling, not the resolved one: a case-insensitive filesystem
+    # can answer to a name the profile did not write, and the bundle should carry
+    # exactly the name a reviewer reads in the profile.
+    name = Path(declared).name
+    expected = info.get("CFBundleIconFile")
+    if not isinstance(expected, str) or expected not in {name, Path(name).stem}:
+        fail(
+            f"Application icon {name} does not match the bundle's CFBundleIconFile "
+            f"({expected!r}), so the app would ship a generic icon."
+        )
+    shutil.copy2(icon, resources / name)
 
 
 def validate_resource_files(root: Path, files: dict[str, str], *, exact: bool = False) -> None:
@@ -972,6 +1076,10 @@ def assemble_menu_bar_swiftpm(
     # focus-stealing window, so refuse to sign that rather than notarise it.
     if info.get("LSUIElement") is not True:
         fail(f"{product} must stay menu-bar-only: LSUIElement is not true.")
+    # Optional: only a profile that declares `app_icon` ships one. The apps that do
+    # not declare it (OpenDefendrWatchr, OpenZombr) assemble exactly as before, and
+    # the icon is in place before the bundle reaches the secretless preflight.
+    copy_app_icon(source, resources, profile, info)
     with info_path.open("wb") as handle:
         plistlib.dump(info, handle, sort_keys=True)
     return app
