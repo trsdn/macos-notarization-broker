@@ -86,6 +86,7 @@ class ProfileTests(unittest.TestCase):
                 "md2loop",
                 "openconnct",
                 "opendefendrwatchr",
+                "openfreshr",
                 "openlens",
                 "openswitchr",
                 "openwritr",
@@ -103,6 +104,7 @@ class ProfileTests(unittest.TestCase):
         profiles = broker.load_profiles()
         self.assertEqual(profiles["md2loop"]["repository_id"], 1168645937)
         self.assertEqual(profiles["opendefendrwatchr"]["repository_id"], 1342759464)
+        self.assertEqual(profiles["openfreshr"]["repository_id"], 1350716134)
         self.assertEqual(profiles["openzombr"]["repository_id"], 1350175894)
         self.assertEqual(profiles["openzonr"]["repository_id"], 1348990573)
         self.assertEqual(profiles["openconnct"]["repository_id"], 1342923126)
@@ -191,6 +193,64 @@ class ProfileTests(unittest.TestCase):
                 "better-kampfinsel-v{version}-macOS-arm64.dmg",
             ],
         )
+
+    def test_openfreshr_builds_against_the_reviewed_dependency_lock(self) -> None:
+        profile = broker.get_profile("openfreshr")
+        calls: list[list[str]] = []
+
+        def fake_run(command, **kwargs):  # type: ignore[no-untyped-def]
+            calls.append(command)
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "source"
+            project = source / "OpenFreshr.xcodeproj"
+            workspace_lock = project / "project.xcworkspace" / "xcshareddata" / "swiftpm" / "Package.resolved"
+            workspace_lock.parent.mkdir(parents=True)
+            (project / "project.pbxproj").write_text("", encoding="utf-8")
+            # A source that moved a pin must not get its way.
+            workspace_lock.write_text('{"pins": [], "version": 3}', encoding="utf-8")
+            work = Path(temporary) / "work"
+            work.mkdir()
+            with mock.patch.object(broker, "run", side_effect=fake_run):
+                broker.build_openfreshr(source, work, profile, "1.2.3", "42")
+            self.assertEqual(
+                workspace_lock.read_bytes(),
+                broker.safe_profile_path(profile["dependency_lock"]).read_bytes(),
+            )
+
+        self.assertEqual(len(calls), 2)
+        resolve, build = calls
+        self.assertIn("-resolvePackageDependencies", resolve)
+        for command in calls:
+            self.assertEqual(command[0], "xcodebuild")
+            self.assertIn("-onlyUsePackageVersionsFromResolvedFile", command)
+        self.assertIn("build", build)
+        self.assertIn("MARKETING_VERSION=1.2.3", build)
+        self.assertIn(f"DEVELOPMENT_TEAM={profile['team_id']}", build)
+
+    def test_openfreshr_declares_the_updater_bundle_and_publishes_the_updater_asset(self) -> None:
+        # AppUpdater only accepts "<repository>-<semver>.dmg", and SwiftPM ships its
+        # data-only resource bundle inside the app; preflight rejects an undeclared one.
+        profile = broker.get_profile("openfreshr")
+        self.assertEqual(
+            profile["nested_resource_bundles"],
+            [{"path": "Contents/Resources/AppUpdater_AppUpdater.bundle"}],
+        )
+        self.assertIn(
+            {
+                "type": "dmg",
+                "name": "OpenFreshr-{version}.dmg",
+                "copy_of": "OpenFreshr-v{version}-macOS-arm64.dmg",
+            },
+            profile["artifacts"],
+        )
+
+    def test_openfreshr_is_not_sandboxed_and_asks_for_no_entitlements(self) -> None:
+        # It replaces apps in /Applications, so it cannot be sandboxed, and a
+        # hardened non-sandboxed app needs no entitlement for what it does.
+        entitlements = plistlib.loads(broker.safe_profile_path("entitlements/openfreshr.plist").read_bytes())
+        self.assertEqual(entitlements, {})
 
     def test_openlens_publishes_the_name_appupdater_looks_for(self) -> None:
         # AppUpdater only accepts "<repository>-<semver>.dmg". Without this copy,
