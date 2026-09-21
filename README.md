@@ -25,7 +25,9 @@ Step 4 runs unattended: `macos-signing` has no required reviewer (see
 If a second trusted maintainer joins, reconsider adding one back.
 
 External source scripts never run in the privileged job, action dependencies
-are pinned to commit SHAs, and permissions are read-only per job.
+are pinned to commit SHAs, and permissions are read-only per job, with one exception:
+the `attest` job, which may write only build attestations (see
+[SECURITY.md](SECURITY.md#build-attestation)).
 
 See [SECURITY.md](SECURITY.md) for the full model and required repository
 rules.

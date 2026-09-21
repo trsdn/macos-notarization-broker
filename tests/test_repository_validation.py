@@ -6,6 +6,7 @@ import io
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -197,6 +198,96 @@ class MigrationWorkflowValidatorTests(unittest.TestCase):
         for old, new in substitutions:
             with self.subTest(old=old), self.assertRaises(AssertionError):
                 self.validate(MIGRATION_WORKFLOW.replace(old, new))
+
+
+class AttestJobPolicyTests(unittest.TestCase):
+    """The attest job is the one place a workflow here may write, and only this much."""
+
+    WORKFLOW_TEXT = (ROOT / ".github" / "workflows" / "notarize.yml").read_text(encoding="utf-8")
+
+    def assert_rejected(self, mutated: str) -> None:
+        self.assertNotEqual(mutated, self.WORKFLOW_TEXT, "the mutation did not change the workflow")
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "notarize.yml"
+            path.write_text(mutated, encoding="utf-8")
+            with mock.patch.object(validator, "WORKFLOW", path):
+                with self.assertRaises(AssertionError):
+                    validator.validate_notarize_workflow()
+
+    def test_the_real_workflow_is_accepted(self) -> None:
+        validator.validate_notarize_workflow()
+
+    def test_missing_attest_job_is_rejected(self) -> None:
+        head = self.WORKFLOW_TEXT.split("\n  attest:\n", 1)[0]
+        self.assert_rejected(head + "\n")
+
+    def test_attest_job_may_not_gain_a_permission(self) -> None:
+        self.assert_rejected(
+            self.WORKFLOW_TEXT.replace("      id-token: write\n", "      id-token: write\n      packages: write\n")
+        )
+
+    def test_attest_job_may_not_write_contents(self) -> None:
+        head, tail = self.WORKFLOW_TEXT.split("\n  attest:\n", 1)
+        self.assert_rejected(head + "\n  attest:\n" + tail.replace("contents: read", "contents: write", 1))
+
+    def test_attest_job_may_not_lose_a_required_permission(self) -> None:
+        head, tail = self.WORKFLOW_TEXT.split("\n  attest:\n", 1)
+        self.assert_rejected(head + "\n  attest:\n" + tail.replace("      attestations: write\n", "", 1))
+
+    def test_another_job_may_not_write(self) -> None:
+        head, tail = self.WORKFLOW_TEXT.split("\n  preflight:\n", 1)
+        self.assert_rejected(
+            head + "\n  preflight:\n" + tail.replace("      contents: read\n", "      contents: write\n", 1)
+        )
+
+    def test_another_job_may_not_get_the_oidc_token(self) -> None:
+        head, tail = self.WORKFLOW_TEXT.split("\n  build:\n", 1)
+        self.assert_rejected(
+            head + "\n  build:\n" + tail.replace("      contents: read\n", "      contents: read\n      id-token: write\n", 1)
+        )
+
+    def test_attest_job_may_not_reference_a_secret(self) -> None:
+        self.assert_rejected(
+            self.WORKFLOW_TEXT.replace(
+                "          path: notarized\n",
+                "          path: notarized\n          github-token: ${{ secrets.APPLE_ID }}\n",
+            )
+        )
+
+    def test_attest_job_may_not_use_an_environment(self) -> None:
+        self.assert_rejected(
+            self.WORKFLOW_TEXT.replace(
+                "    name: Attest the notarized artifacts\n",
+                "    name: Attest the notarized artifacts\n    environment: macos-signing\n",
+            )
+        )
+
+    def test_attest_job_may_not_run_a_shell(self) -> None:
+        self.assert_rejected(
+            self.WORKFLOW_TEXT.rstrip("\n")
+            + "\n\n      - name: Extra\n        run: |\n          echo hello\n"
+        )
+
+    def test_attest_job_may_not_use_an_unpinned_action(self) -> None:
+        self.assert_rejected(
+            self.WORKFLOW_TEXT.replace(
+                "actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8", "actions/attest-build-provenance@v4"
+            )
+        )
+
+    def test_attest_job_may_not_use_another_action(self) -> None:
+        self.assert_rejected(
+            self.WORKFLOW_TEXT.rstrip("\n")
+            + "\n\n      - name: Other\n        uses: actions/cache@0000000000000000000000000000000000000000\n"
+        )
+
+    def test_attest_job_must_fetch_by_artifact_id_not_name(self) -> None:
+        self.assert_rejected(
+            self.WORKFLOW_TEXT.replace(
+                "          artifact-ids: ${{ needs.sign.outputs.artifact_id }}\n",
+                "          name: ${{ needs.resolve.outputs.artifact_name }}\n",
+            )
+        )
 
 
 if __name__ == "__main__":

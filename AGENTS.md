@@ -47,6 +47,12 @@ touching `scripts/broker.py`, a workflow, or a profile):
   file to `profiles/apps.json` — profiles stay declarative and allowlisted.
 - Let Apple secret use leak outside the protected `sign` job, or add a
   secret, an environment, or a write permission to any other job/workflow.
+  **The one exception is the `attest` job in `notarize.yml`**: it may have
+  `attestations: write` and `id-token: write` (plus `actions: read` and
+  `contents: read`) and nothing else, no secret, no environment, no shell, and it
+  fetches the notarized artifact by the `sign` job's immutable artifact id.
+  `scripts/validate-repository.py` enforces exactly that and rejects every other
+  job with a non-read permission.
 - Weaken a workflow's `permissions:` block, or drop a full-commit-SHA pin on
   a `uses:` reference.
 - Let untrusted source-repository code run in the privileged signing job.
