@@ -170,6 +170,7 @@ def load_profiles() -> dict[str, Any]:
         "threemfquicklook-xcode",
         "md2loop-xcode",
         "openconnct-make",
+        "openfreshr-xcode",
         "opendefendrwatchr-swiftpm",
         "openlens-xcode",
         "openswitchr-swiftpm",
@@ -1289,6 +1290,59 @@ def build_ptionsplus(
     return derived_data / "Build" / "Products" / "Release" / profile["bundle_name"]
 
 
+def build_openfreshr(
+    source: Path, work: Path, profile: dict[str, Any], version: str, build_number: str
+) -> Path:
+    # Built from the committed project for the same reason as build_openlens:
+    # OpenFreshr generates its .xcodeproj with XcodeGen, which is not on the runner
+    # image, so the project is committed and this adapter drives it directly.
+    #
+    # The app links AppUpdater through SwiftPM. As for md2loop and openlens, the
+    # reviewed broker lock replaces the source's Package.resolved, so the source
+    # cannot move a dependency to an unreviewed revision.
+    ensure_source_file(source, "OpenFreshr.xcodeproj/project.pbxproj")
+    lock = safe_profile_path(profile["dependency_lock"])
+    workspace_lock = (
+        source
+        / "OpenFreshr.xcodeproj"
+        / "project.xcworkspace"
+        / "xcshareddata"
+        / "swiftpm"
+        / "Package.resolved"
+    )
+    workspace_lock.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(lock, workspace_lock)
+    derived_data = work / "DerivedData"
+    packages = work / "SourcePackages"
+    common = [
+        "xcodebuild",
+        "-project",
+        "OpenFreshr.xcodeproj",
+        "-scheme",
+        "OpenFreshr",
+        "-clonedSourcePackagesDirPath",
+        str(packages),
+        "-onlyUsePackageVersionsFromResolvedFile",
+    ]
+    run(common + ["-resolvePackageDependencies"], cwd=source)
+    run(
+        common
+        + [
+            "-configuration",
+            "Release",
+            "-destination",
+            "platform=macOS",
+            "-derivedDataPath",
+            str(derived_data),
+            "clean",
+            "build",
+        ]
+        + xcodebuild_settings(profile, version, build_number),
+        cwd=source,
+    )
+    return derived_data / "Build" / "Products" / "Release" / profile["bundle_name"]
+
+
 def build_openlens(
     source: Path, work: Path, profile: dict[str, Any], version: str, build_number: str
 ) -> Path:
@@ -1637,6 +1691,8 @@ def command_build(args: argparse.Namespace) -> None:
             built_app = assemble_menu_bar_swiftpm(source, work, profile, version)
         elif adapter == "openzonr-swiftpm":
             built_app = assemble_menu_bar_swiftpm(source, work, profile, version)
+        elif adapter == "openfreshr-xcode":
+            built_app = build_openfreshr(source, work, profile, version, args.build_number)
         elif adapter == "openlens-xcode":
             built_app = build_openlens(source, work, profile, version, args.build_number)
         elif adapter == "openswitchr-swiftpm":
