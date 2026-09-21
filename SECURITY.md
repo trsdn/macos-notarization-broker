@@ -135,6 +135,33 @@ and read-only, uses `pull_request` rather than `pull_request_target`, and
 therefore executes untrusted contributor code only in a disposable, unprivileged
 runner with no access to repository secrets or the `GITHUB_TOKEN` write scopes.
 
+## Build attestation
+
+The `attest` job in `notarize.yml` makes GitHub sign a SLSA build-provenance statement
+about the notarized `.dmg` and `.zip` files with this workflow's OIDC identity, so anyone
+can check that a downloaded file was produced by this workflow at a given broker commit:
+
+```bash
+gh attestation verify OpenSwitchr-X.Y.Z.dmg --repo trsdn/macos-notarization-broker
+```
+
+It is the **only job in the workflow with write permissions**, and the permissions are
+fixed: `attestations: write` and `id-token: write`, plus `actions: read` and
+`contents: read`. It runs after `sign`, references no secret and no environment, runs no
+shell, uses only two SHA-pinned actions, and fetches the notarized artifact by the `sign`
+job's immutable artifact id, never by name, like every other handoff here. It never
+sees the certificate, an Apple credential or the source repository. Its OIDC token can
+only vouch for this workflow; it cannot sign or notarize anything.
+`scripts/validate-repository.py` rejects a change that gives any other job a non-read
+permission, gives this job another permission, or weakens any of the rules above.
+
+What an attestation proves: the file's digest was produced by `notarize.yml` in
+`trsdn/macos-notarization-broker` at the recorded broker commit. What it does not prove:
+which source commit was built. That is recorded in `provenance.json`, which is data
+attached to the release, not a signed statement. The attestation is fail-closed: if the
+`attest` job fails, the run fails and `request.sh` has nothing to publish. The apps'
+`GitHubAttestationPolicy` stays unused, as explained under the AppUpdater notes.
+
 ## Tag and artifact integrity
 
 - Tags are dereferenced to a full commit SHA before the build starts.

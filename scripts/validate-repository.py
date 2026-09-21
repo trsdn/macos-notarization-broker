@@ -94,6 +94,52 @@ def validate_supporting_workflow(path: Path) -> None:
     require_no_expression_interpolation(workflow, label)
 
 
+ATTEST_PERMISSIONS = {
+    "actions": "read",
+    "attestations": "write",
+    "contents": "read",
+    "id-token": "write",
+}
+ATTEST_ACTIONS = {"actions/download-artifact", "actions/attest-build-provenance"}
+
+
+def validate_attest_job(workflow: str) -> None:
+    """The one job allowed to write, and exactly what it may write.
+
+    Everything before it may not grant a non-read permission at all. The attest job
+    gets `attestations` and `id-token` write and nothing else, references no secret
+    or environment, runs no shell, and uses only two pinned actions.
+    """
+    require("\n  attest:\n" in workflow, "the attest job is missing")
+    before, block = workflow.split("\n  attest:\n", 1)
+    require("\n  sign:\n" in before, "the attest job must come after the sign job")
+    for value in PERMISSION_VALUE.findall(before):
+        require(value in {"read", "none"}, "a job other than attest grants a non-read permission")
+    require(
+        "artifact-ids: ${{ needs.sign.outputs.artifact_id }}" in block and "name: ${{ needs" not in block,
+        "the attest job must fetch the artifact by the sign job's immutable artifact id, never by name",
+    )
+    require("secrets." not in block, "the attest job references a secret")
+    require("environment:" not in block, "the attest job uses an environment")
+    require("\n        run:" not in block and "run: |" not in block, "the attest job runs a shell")
+    require(
+        "      - resolve" in block and "      - sign" in block,
+        "the attest job must need resolve and sign",
+    )
+    permissions = dict(
+        re.findall(r"^      ([a-z-]+):\s*(read|write|none)\s*$", block.split("    steps:")[0], re.MULTILINE)
+    )
+    require(
+        permissions == ATTEST_PERMISSIONS,
+        f"the attest job permissions must be exactly {ATTEST_PERMISSIONS}, not {permissions}",
+    )
+    used = re.findall(r"^\s*(?:-\s+)?uses:\s*([^#\s]+)", block, re.MULTILINE)
+    require(used, "the attest job uses no actions")
+    for action in used:
+        require(PINNED_ACTION.fullmatch(action) is not None, f"attest: action is not pinned: {action}")
+        require(action.split("@")[0] in ATTEST_ACTIONS, f"attest: unexpected action {action}")
+
+
 def validate_notarize_workflow() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
     trigger_block = workflow.split("\non:\n", 1)[1].split("\npermissions:", 1)[0]
@@ -138,6 +184,8 @@ def validate_notarize_workflow() -> None:
     require("source/scripts/" not in sign_block, "privileged job executes source repository scripts")
     require("source/build-app.sh" not in sign_block, "privileged job executes source build scripts")
     require("repository: ${{ needs.resolve.outputs.repository }}" not in sign_block, "privileged job checks out source")
+
+    validate_attest_job(workflow)
 
     first_secret = workflow.index("secrets.")
     require(first_secret > workflow.index("\n  sign:\n"), "Apple secrets are referenced before sign job")
