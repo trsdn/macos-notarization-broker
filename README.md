@@ -29,6 +29,14 @@ are pinned to commit SHAs, and permissions are read-only per job, with one excep
 the `attest` job, which may write only build attestations (see
 [SECURITY.md](SECURITY.md#build-attestation)).
 
+Artifacts are attested by default. A profile may set `attest: false` only on a
+reviewed artifact exception; a `copy_of` alias must use the same policy as its
+byte-identical source, and every profile must retain at least one attested
+artifact. OpenWritr is the deliberate exception: its ZIP is attested, but its
+versioned DMG and updater alias are not. An installed OpenWritr version can
+crash while checking an update if an attestation exists for that DMG digest
+([trsdn/OpenWritr#31](https://github.com/trsdn/OpenWritr/issues/31)).
+
 See [SECURITY.md](SECURITY.md) for the full model and required repository
 rules.
 

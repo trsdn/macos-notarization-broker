@@ -138,6 +138,12 @@ def validate_attest_job(workflow: str) -> None:
     for action in used:
         require(PINNED_ACTION.fullmatch(action) is not None, f"attest: action is not pinned: {action}")
         require(action.split("@")[0] in ATTEST_ACTIONS, f"attest: unexpected action {action}")
+    require(
+        block.count("uses: actions/attest-build-provenance@") == 1
+        and "subject-checksums: notarized/attestation-subjects.sha256" in block
+        and "subject-path:" not in block,
+        "the attest job must consume only the broker-generated subject checksum manifest",
+    )
 
 
 def validate_notarize_workflow() -> None:

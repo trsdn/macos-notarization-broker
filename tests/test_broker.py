@@ -150,6 +150,7 @@ class ProfileTests(unittest.TestCase):
             [
                 "OpenWritr-v{version}-macOS-arm64.zip",
                 "OpenWritr-v{version}-macOS-arm64.dmg",
+                "OpenWritr-{version}.dmg",
             ],
         )
         self.assertEqual(
@@ -205,6 +206,36 @@ class ProfileTests(unittest.TestCase):
             artifacts,
         )
 
+    def test_openwritr_publishes_the_name_appupdater_looks_for(self) -> None:
+        profile = broker.get_profile("openwritr")
+        artifacts = profile["artifacts"]
+        self.assertIn(
+            {
+                "type": "dmg",
+                "name": "OpenWritr-{version}.dmg",
+                "copy_of": "OpenWritr-v{version}-macOS-arm64.dmg",
+                "attest": False,
+            },
+            artifacts,
+        )
+        self.assertEqual(profile["dependency_lock"], "locks/openwritr-Package.resolved")
+        self.assertEqual(profile["app_icon"], "Resources/AppIcon.icns")
+        self.assertEqual(
+            profile["nested_resource_bundles"],
+            [{"path": "Contents/Resources/AppUpdater_AppUpdater.bundle"}],
+        )
+        self.assertTrue(artifacts[0].get("attest", True))
+        self.assertFalse(artifacts[1]["attest"])
+        lock = json.loads(broker.safe_profile_path(profile["dependency_lock"]).read_text())
+        self.assertEqual(
+            {pin["identity"]: pin["state"]["revision"] for pin in lock["pins"]},
+            {
+                "appupdater": "4826e7205ed0159347de84b19960f4ba0e535504",
+                "fluidaudio": "41540ea237350afe5117a082b5c28eda642d0612",
+                "version": "3043fcd2a50375db76d89ff206a612471833d1c2",
+            },
+        )
+
     def test_artifact_copy_must_follow_an_original_of_the_same_type(self) -> None:
         dmg = {"type": "dmg", "name": "App-v{version}.dmg"}
         zip_ = {"type": "zip", "name": "App-v{version}.zip"}
@@ -228,6 +259,17 @@ class ProfileTests(unittest.TestCase):
             "case-only duplicate": [dmg, {"type": "dmg", "name": "app-v{version}.DMG"}],
             "name not matching type": [{"type": "dmg", "name": "App-{version}.zip"}],
             "unknown field": [dict(dmg, sign=False)],
+            "non-boolean attestation policy": [dict(dmg, attest="no")],
+            "no attested artifact": [dict(dmg, attest=False)],
+            "copy with conflicting attestation policy": [
+                dmg,
+                {
+                    "type": "dmg",
+                    "name": "App-{version}.dmg",
+                    "copy_of": dmg["name"],
+                    "attest": False,
+                },
+            ],
             "path traversal": [{"type": "dmg", "name": "../App-{version}.dmg"}],
             "empty list": [],
         }
@@ -235,6 +277,41 @@ class ProfileTests(unittest.TestCase):
             with self.subTest(label):
                 with self.assertRaises(broker.BrokerError):
                     broker.validate_artifact_policy("demo", artifacts)
+
+    def test_attestation_manifest_contains_only_declared_subjects(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "attestation-subjects.sha256"
+            broker.write_attestation_subjects(
+                path,
+                [
+                    {"name": "App.zip", "sha256": "a" * 64, "attest": True},
+                    {"name": "App.dmg", "sha256": "b" * 64, "attest": False},
+                    {"name": "Alias.dmg", "sha256": "b" * 64, "attest": False},
+                ],
+            )
+            self.assertEqual(path.read_text(), f"{'a' * 64}  App.zip\n")
+
+    def test_all_other_profile_artifacts_remain_attested_by_default(self) -> None:
+        profiles = broker.load_profiles()
+        excluded = {
+            artifact["name"]
+            for artifact in profiles["openwritr"]["artifacts"]
+            if not artifact.get("attest", True)
+        }
+        self.assertEqual(
+            excluded,
+            {
+                "OpenWritr-v{version}-macOS-arm64.dmg",
+                "OpenWritr-{version}.dmg",
+            },
+        )
+        for name, profile in profiles.items():
+            if name == "openwritr":
+                continue
+            with self.subTest(profile=name):
+                self.assertTrue(
+                    all(artifact.get("attest", True) for artifact in profile["artifacts"])
+                )
 
     def test_profiles_shipping_nested_code_are_declared(self) -> None:
         # spacemender ships a privileged XPC helper; openconnct ships a CoreAudio
@@ -1625,6 +1702,124 @@ class BuildAdapterTests(unittest.TestCase):
             plistlib.dump(info, handle)
         return source
 
+    def openwritr_source(self, root: Path, profile: dict, lock: str) -> Path:
+        source = root / "source"
+        (source / "Resources").mkdir(parents=True)
+        (source / "Sources/OpenWritr/Resources").mkdir(parents=True)
+        (source / ".build/checkouts/AppUpdater").mkdir(parents=True)
+        (source / ".build/checkouts/FluidAudio").mkdir(parents=True)
+        (source / ".build/checkouts/Version").mkdir(parents=True)
+        (source / "Package.resolved").write_text(lock, encoding="utf-8")
+        (source / "Resources/AppIcon.icns").write_bytes(b"icns" + b"\x00" * 60)
+        (source / "Sources/OpenWritr/Resources/cleanup-prompt-profiles.json").write_text(
+            "{}", encoding="utf-8"
+        )
+        (source / "LICENSE").write_text("OpenWritr", encoding="utf-8")
+        (source / "THIRD_PARTY_NOTICES.md").write_text("Notices", encoding="utf-8")
+        (source / ".build/checkouts/AppUpdater/LICENSE.md").write_text(
+            "AppUpdater", encoding="utf-8"
+        )
+        (source / ".build/checkouts/FluidAudio/LICENSE").write_text(
+            "FluidAudio", encoding="utf-8"
+        )
+        (source / ".build/checkouts/Version/LICENSE").write_text(
+            "Version", encoding="utf-8"
+        )
+        with (source / "Info.plist").open("wb") as handle:
+            plistlib.dump(
+                {
+                    "CFBundleIdentifier": profile["bundle_identifier"],
+                    "CFBundleShortVersionString": "0.0.0",
+                    "CFBundleVersion": "0.0.0",
+                    "LSUIElement": True,
+                },
+                handle,
+            )
+        return source
+
+    def fake_openwritr_build(self, root: Path, calls: list):  # type: ignore[no-untyped-def]
+        def build(source, product, require_lock):  # type: ignore[no-untyped-def]
+            calls.append((product, require_lock))
+            bin_dir = root / "bin"
+            bundle = bin_dir / "AppUpdater_AppUpdater.bundle"
+            bundle.mkdir(parents=True)
+            (bundle / "tuf-root.json").write_text("{}", encoding="utf-8")
+            (bin_dir / product).write_bytes(b"binary")
+            return bin_dir / product
+
+        return build
+
+    def test_openwritr_builds_reviewed_release_layout(self) -> None:
+        profile = broker.get_profile("openwritr")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            lock = broker.safe_profile_path(profile["dependency_lock"]).read_text()
+            source = self.openwritr_source(root, profile, lock)
+            work = root / "work"
+            work.mkdir()
+            calls: list = []
+            with mock.patch.object(
+                broker, "swift_build", side_effect=self.fake_openwritr_build(root, calls)
+            ):
+                app = broker.assemble_openwritr(source, work, profile, "1.7.0")
+            self.assertEqual(calls, [("OpenWritr", True)])
+            resources = app / "Contents/Resources"
+            self.assertTrue((resources / "AppIcon.icns").is_file())
+            self.assertTrue(
+                (resources / "AppUpdater_AppUpdater.bundle/tuf-root.json").is_file()
+            )
+            self.assertEqual(
+                (resources / "cleanup-prompt-profiles.json").read_text(), "{}"
+            )
+            self.assertEqual(
+                sorted(path.name for path in (resources / "Licenses").iterdir()),
+                [
+                    "AppUpdater-LICENSE.txt",
+                    "FluidAudio-LICENSE.txt",
+                    "OpenWritr-LICENSE.txt",
+                    "THIRD_PARTY_NOTICES.md",
+                    "Version-LICENSE.txt",
+                ],
+            )
+            with (app / "Contents/Info.plist").open("rb") as handle:
+                info = plistlib.load(handle)
+            self.assertEqual(info["CFBundleShortVersionString"], "1.7.0")
+            self.assertEqual(info["CFBundleVersion"], "1.7.0")
+            self.assertEqual(info["CFBundleIconFile"], "AppIcon")
+            self.assertTrue(info["LSUIElement"])
+
+    def test_openwritr_rejects_an_unreviewed_or_mutated_lock(self) -> None:
+        profile = broker.get_profile("openwritr")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = self.openwritr_source(root, profile, '{"pins": [], "version": 3}')
+            work = root / "work"
+            work.mkdir()
+            with mock.patch.object(
+                broker, "swift_build", side_effect=AssertionError("must not build")
+            ):
+                with self.assertRaises(broker.BrokerError):
+                    broker.assemble_openwritr(source, work, profile, "1.7.0")
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            lock = broker.safe_profile_path(profile["dependency_lock"]).read_text()
+            source = self.openwritr_source(root, profile, lock)
+            work = root / "work"
+            work.mkdir()
+
+            def mutate_lock(source_arg, product, require_lock):  # type: ignore[no-untyped-def]
+                (source_arg / "Package.resolved").write_text(
+                    '{"pins": [], "version": 3}', encoding="utf-8"
+                )
+                return self.fake_openwritr_build(root, [])(
+                    source_arg, product, require_lock
+                )
+
+            with mock.patch.object(broker, "swift_build", side_effect=mutate_lock):
+                with self.assertRaises(broker.BrokerError):
+                    broker.assemble_openwritr(source, work, profile, "1.7.0")
+
     def fake_swift_build(self, root: Path, profile: dict, calls: list):  # type: ignore[no-untyped-def]
         def build(source, product, require_lock):  # type: ignore[no-untyped-def]
             calls.append((product, require_lock))
@@ -2540,5 +2735,10 @@ class SourceAppIconTests(unittest.TestCase):
             for name, profile in broker.load_profiles().items()
             if "app_icon" in profile
         }
-        self.assertEqual(declared, {"openzonr": "Resources/AppIcon.icns"})
-
+        self.assertEqual(
+            declared,
+            {
+                "openwritr": "Resources/AppIcon.icns",
+                "openzonr": "Resources/AppIcon.icns",
+            },
+        )

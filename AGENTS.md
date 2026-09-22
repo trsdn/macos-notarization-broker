@@ -144,7 +144,10 @@ disabled; `scripts/local.sh` still dispatches the same hardened workflow.
   already-verified bytes under the new name inside the signing job, with a
   digest re-check, rather than building or notarizing twice. In-app updaters
   need this: AppUpdater only accepts an asset named exactly
-  `<Repository>-<version>.dmg`.
+  `<Repository>-<version>.dmg`. Because attestations are digest-based, a copy
+  must also use the same declarative `attest` policy as its source. Artifacts
+  default to attested and every profile must retain at least one attested
+  artifact.
 - **`casefold()`, not `lower()`, for filesystem-path matching.** Launch
   daemon/agent directory matching folds case with `casefold()` because
   `lower()` leaves `U+017F LONG S` unchanged on APFS's Unicode case folding —
