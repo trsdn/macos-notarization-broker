@@ -289,6 +289,22 @@ class AttestJobPolicyTests(unittest.TestCase):
             )
         )
 
+    def test_attestation_must_use_the_broker_generated_checksum_manifest(self) -> None:
+        self.assert_rejected(
+            self.WORKFLOW_TEXT.replace(
+                "subject-checksums: notarized/attestation-subjects.sha256",
+                "subject-checksums: notarized/other.sha256",
+            )
+        )
+
+    def test_attestation_may_not_fall_back_to_a_subject_glob(self) -> None:
+        self.assert_rejected(
+            self.WORKFLOW_TEXT.replace(
+                "subject-checksums: notarized/attestation-subjects.sha256",
+                "subject-path: notarized/*.zip",
+            )
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

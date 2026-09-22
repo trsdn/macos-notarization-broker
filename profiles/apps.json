@@ -31,16 +31,23 @@
       "repository": "trsdn/OpenWritr",
       "repository_id": 1165782217,
       "build_adapter": "openwritr-swiftpm",
+      "dependency_lock": "locks/openwritr-Package.resolved",
       "bundle_name": "OpenWritr.app",
       "bundle_identifier": "com.openwritr.app",
       "bundle_display_name": "OpenWritr",
       "executable": "OpenWritr",
       "package_type": "APPL",
+      "app_icon": "Resources/AppIcon.icns",
       "architectures": [
         "arm64"
       ],
       "minimum_system_version": "14.0",
       "entitlements": "entitlements/openwritr.plist",
+      "nested_resource_bundles": [
+        {
+          "path": "Contents/Resources/AppUpdater_AppUpdater.bundle"
+        }
+      ],
       "dmg_volume_name": "OpenWritr",
       "max_archive_bytes": 1073741824,
       "max_uncompressed_bytes": 2147483648,
@@ -52,7 +59,14 @@
         },
         {
           "type": "dmg",
-          "name": "OpenWritr-v{version}-macOS-arm64.dmg"
+          "name": "OpenWritr-v{version}-macOS-arm64.dmg",
+          "attest": false
+        },
+        {
+          "type": "dmg",
+          "name": "OpenWritr-{version}.dmg",
+          "copy_of": "OpenWritr-v{version}-macOS-arm64.dmg",
+          "attest": false
         }
       ]
     },

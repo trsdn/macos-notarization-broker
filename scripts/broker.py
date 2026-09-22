@@ -364,15 +364,19 @@ def validate_artifact_policy(name: str, artifacts: Any) -> None:
     """
     if not isinstance(artifacts, list) or not artifacts:
         fail(f"Profile {name} must declare at least one artifact.")
-    produced: dict[str, str] = {}
+    produced: dict[str, tuple[str, bool]] = {}
+    attested = 0
     for artifact in artifacts:
         if not isinstance(artifact, dict):
             fail(f"Profile {name} has an artifact entry that is not an object.")
-        unknown = set(artifact) - {"type", "name", "copy_of"}
+        unknown = set(artifact) - {"type", "name", "copy_of", "attest"}
         if unknown:
             fail(f"Profile {name} artifact has unsupported fields: {', '.join(sorted(unknown))}")
         if artifact.get("type") not in {"zip", "dmg"}:
             fail(f"Profile {name} has an unsupported artifact type.")
+        if "attest" in artifact and not isinstance(artifact["attest"], bool):
+            fail(f"Profile {name} artifact attest policy must be boolean.")
+        should_attest = artifact.get("attest", True)
         template = artifact.get("name")
         rendered = template.replace("{version}", "1.2.3") if isinstance(template, str) else ""
         if not rendered or Path(rendered).name != rendered:
@@ -383,12 +387,37 @@ def validate_artifact_policy(name: str, artifacts: Any) -> None:
             fail(f"Profile {name} declares a duplicate artifact name: {template}")
         if "copy_of" in artifact:
             source = artifact["copy_of"]
-            if produced.get(source) != artifact["type"]:
+            if source not in produced or produced[source][0] != artifact["type"]:
                 fail(
                     f"Profile {name} artifact {template} must copy an earlier artifact "
                     f"of the same type."
                 )
-        produced[template] = artifact["type"]
+            if produced[source][1] != should_attest:
+                fail(
+                    f"Profile {name} artifact {template} must use the same attestation "
+                    "policy as its byte-identical source."
+                )
+        produced[template] = (artifact["type"], should_attest)
+        attested += int(should_attest)
+    if attested == 0:
+        fail(f"Profile {name} must attest at least one release artifact.")
+
+
+def write_attestation_subjects(path: Path, artifacts: list[dict[str, Any]]) -> None:
+    """Write the final artifact digests GitHub may attest.
+
+    The manifest is generated only after packaging, notarization, stapling and any
+    `copy_of` operation. The attest job consumes it without running a shell, so a
+    profile can make one narrowly reviewed digest-level compatibility exception
+    without weakening attestation coverage for every other artifact.
+    """
+    subjects = [artifact for artifact in artifacts if artifact["attest"]]
+    if not subjects:
+        fail("No release artifact is eligible for build attestation.")
+    path.write_text(
+        "".join(f"{artifact['sha256']}  {artifact['name']}\n" for artifact in subjects),
+        encoding="utf-8",
+    )
 
 
 def validate_nested_resource_bundle_policy(name: str, profile: dict[str, Any]) -> None:
@@ -987,33 +1016,64 @@ def swift_build(source: Path, product: str, require_lock: bool) -> Path:
     return executable
 
 
-def assemble_openwritr(source: Path, work: Path, profile: dict[str, Any]) -> Path:
+def assemble_openwritr(
+    source: Path, work: Path, profile: dict[str, Any], version: str
+) -> Path:
+    expected_lock = safe_profile_path(profile["dependency_lock"])
+    lock = ensure_source_file(source, "Package.resolved")
+    if json.loads(lock.read_text()) != json.loads(expected_lock.read_text()):
+        fail("OpenWritr Package.resolved differs from the reviewed broker dependency lock.")
     executable = swift_build(source, "OpenWritr", require_lock=True)
+    if json.loads(lock.read_text()) != json.loads(expected_lock.read_text()):
+        fail("OpenWritr dependency lock changed during compilation.")
     app = work / profile["bundle_name"]
     macos = app / "Contents" / "MacOS"
     resources = app / "Contents" / "Resources"
     macos.mkdir(parents=True)
     resources.mkdir(parents=True)
     shutil.copy2(executable, macos / profile["executable"])
-    shutil.copy2(ensure_source_file(source, "Resources/AppIcon.icns"), resources / "AppIcon.icns")
     shutil.copy2(
         ensure_source_file(source, "Sources/OpenWritr/Resources/cleanup-prompt-profiles.json"),
         resources / "cleanup-prompt-profiles.json",
     )
+    for spec in nested_resource_bundles(profile):
+        bundle = executable.parent / Path(spec["path"]).name
+        if bundle.is_symlink() or not bundle.is_dir():
+            fail(f"Required SwiftPM resource bundle is missing or unsafe: {bundle.name}")
+        shutil.copytree(bundle, app / spec["path"], symlinks=True)
+    make_resource_bundles_writable(app, profile)
+    licenses = resources / "Licenses"
+    licenses.mkdir()
+    license_files = (
+        ("LICENSE", "OpenWritr-LICENSE.txt"),
+        ("THIRD_PARTY_NOTICES.md", "THIRD_PARTY_NOTICES.md"),
+        (".build/checkouts/AppUpdater/LICENSE.md", "AppUpdater-LICENSE.txt"),
+        (".build/checkouts/FluidAudio/LICENSE", "FluidAudio-LICENSE.txt"),
+        (".build/checkouts/Version/LICENSE", "Version-LICENSE.txt"),
+    )
+    for source_name, destination_name in license_files:
+        shutil.copy2(ensure_source_file(source, source_name), licenses / destination_name)
     info_path = app / "Contents" / "Info.plist"
     shutil.copy2(ensure_source_file(source, "Info.plist"), info_path)
     with info_path.open("rb") as handle:
         info = plistlib.load(handle)
+    if info.get("CFBundleIdentifier") != profile["bundle_identifier"]:
+        fail("OpenWritr Info.plist names a different bundle identifier.")
+    if info.get("LSUIElement") is not True:
+        fail("OpenWritr must stay menu-bar-only: LSUIElement is not true.")
     info.update(
         {
             "CFBundleExecutable": profile["executable"],
             "CFBundleIconFile": "AppIcon",
+            "CFBundleShortVersionString": version,
+            "CFBundleVersion": version,
             "CFBundlePackageType": "APPL",
             "CFBundleDisplayName": profile["bundle_display_name"],
             "NSHighResolutionCapable": True,
             "LSMinimumSystemVersion": profile["minimum_system_version"],
         }
     )
+    copy_app_icon(source, resources, profile, info)
     with info_path.open("wb") as handle:
         plistlib.dump(info, handle, sort_keys=True)
     return app
@@ -1642,7 +1702,7 @@ def command_build(args: argparse.Namespace) -> None:
         elif adapter == "openswitchr-swiftpm":
             built_app = assemble_openswitchr(source, work, profile, version)
         elif adapter == "openwritr-swiftpm":
-            built_app = assemble_openwritr(source, work, profile)
+            built_app = assemble_openwritr(source, work, profile, version)
         elif adapter == "printfilemanager-xcode":
             built_app = build_printfilemanager(source, work, profile, version, args.build_number)
         elif adapter == "threemfquicklook-xcode":
@@ -2916,8 +2976,10 @@ def command_sign(args: argparse.Namespace) -> None:
                         "sha256": sha256_file(destination),
                         "bytes": destination.stat().st_size,
                         "checksum": checksum.name,
+                        "attest": artifact.get("attest", True),
                     }
                 )
+            write_attestation_subjects(output_dir / "attestation-subjects.sha256", artifacts)
 
             preflight_manifest = Path(args.preflight_manifest).resolve()
             if not preflight_manifest.is_file():
