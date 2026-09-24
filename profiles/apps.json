@@ -284,6 +284,12 @@
       "nested_resource_bundles": [
         {
           "path": "Contents/Resources/AppUpdater_AppUpdater.bundle"
+        },
+        {
+          "path": "Contents/Resources/OpenZonr_OpenZonrApp.bundle"
+        },
+        {
+          "path": "Contents/Resources/OpenZonr_OpenZonrCore.bundle"
         }
       ],
       "dmg_volume_name": "OpenZonr",
