@@ -1621,9 +1621,16 @@ class BuildAdapterTests(unittest.TestCase):
         def build(source, product, require_lock):  # type: ignore[no-untyped-def]
             calls.append((product, require_lock))
             bin_dir = root / "bin"
-            bundle = bin_dir / "AppUpdater_AppUpdater.bundle"
-            bundle.mkdir(parents=True, exist_ok=True)
-            (bundle / "tuf-root.json").write_text("{}", encoding="utf-8")
+            # One stub bundle per declaration, named the way `swift build`'s bin
+            # directory actually names them: by the last path segment. Iterating
+            # the profile's own declarations, rather than hardcoding
+            # AppUpdater's, is what let openzonr's second bundle (#83,
+            # localization) join this shared fixture without special-casing it.
+            for spec in broker.nested_resource_bundles(profile):
+                bundle = bin_dir / Path(spec["path"]).name
+                bundle.mkdir(parents=True, exist_ok=True)
+                marker = "tuf-root.json" if bundle.name == "AppUpdater_AppUpdater.bundle" else "marker.json"
+                (bundle / marker).write_text("{}", encoding="utf-8")
             (bin_dir / product).write_bytes(b"binary")
             return bin_dir / product
 
@@ -1647,6 +1654,18 @@ class BuildAdapterTests(unittest.TestCase):
                 self.assertTrue(
                     (app / "Contents/Resources/AppUpdater_AppUpdater.bundle/tuf-root.json").is_file()
                 )
+                if name == "openzonr":
+                    # #83 (localization): OpenZonr ships its String Catalog in
+                    # two of its own SwiftPM resource bundles — one per target
+                    # that has user-facing strings (the app's UI, and Core's
+                    # validation/drag-outcome messages) — and both must be
+                    # copied, not only AppUpdater's.
+                    self.assertTrue(
+                        (app / "Contents/Resources/OpenZonr_OpenZonrApp.bundle/marker.json").is_file()
+                    )
+                    self.assertTrue(
+                        (app / "Contents/Resources/OpenZonr_OpenZonrCore.bundle/marker.json").is_file()
+                    )
                 with (app / "Contents" / "Info.plist").open("rb") as handle:
                     info = plistlib.load(handle)
                 self.assertEqual(info["CFBundleShortVersionString"], "1.2.3")
@@ -1669,9 +1688,23 @@ class BuildAdapterTests(unittest.TestCase):
         profile = broker.get_profile("openzonr")
         self.assertEqual(profile["build_adapter"], "openzonr-swiftpm")
         self.assertEqual(profile["dependency_lock"], "locks/openzonr-Package.resolved")
+        # OpenZonr_OpenZonrApp.bundle and OpenZonr_OpenZonrCore.bundle are the
+        # app's own SwiftPM resource bundles, added for #83 (localization):
+        # each target with user-facing strings gets its own compiled String
+        # Catalog (Localizable.xcstrings -> <locale>.lproj/Localizable.strings),
+        # since a SwiftPM resource bundle is scoped to the target that declares
+        # it, not shared package-wide. Without both entries the adapter would
+        # not copy them, and a published build would ship English-only for
+        # whichever target's bundle was missing, while a local build
+        # (Scripts/bundle.sh, which copies every SwiftPM resource bundle it
+        # finds) showed the translation.
         self.assertEqual(
             profile["nested_resource_bundles"],
-            [{"path": "Contents/Resources/AppUpdater_AppUpdater.bundle"}],
+            [
+                {"path": "Contents/Resources/AppUpdater_AppUpdater.bundle"},
+                {"path": "Contents/Resources/OpenZonr_OpenZonrApp.bundle"},
+                {"path": "Contents/Resources/OpenZonr_OpenZonrCore.bundle"},
+            ],
         )
         # The SwiftPM product is OpenZonrApp while the bundle is OpenZonr.app, so the
         # adapter reads Sources/OpenZonrApp/Info.plist and names the Mach-O accordingly.
