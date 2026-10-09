@@ -493,6 +493,22 @@ def local_request(args: argparse.Namespace) -> None:
     print(f"After completion: scripts/request-local.sh --resume {work / 'state.json'}")
 
 
+def validate_returned_attestation_subjects(
+    result: Path, artifacts: list[dict], profile: dict, version: str
+) -> None:
+    policy = {
+        declaration["name"].format(version=version): declaration.get("attest", True)
+        for declaration in profile["artifacts"]
+    }
+    check(len(artifacts) == len(policy) and {artifact["name"] for artifact in artifacts} == set(policy))
+    for artifact in artifacts:
+        check(artifact["attest"] is policy[artifact["name"]])
+    expected = result.parent / "expected-attestation-subjects.sha256"
+    broker.write_attestation_subjects(expected, artifacts)
+    check((result / "attestation-subjects.sha256").read_bytes() == expected.read_bytes())
+    expected.unlink()
+
+
 def local_receive(path: Path) -> None:
     state = read_json(path)
     inputs = validate_inputs(state["inputs"])
@@ -514,7 +530,7 @@ def local_receive(path: Path) -> None:
     names = {a["name"].format(version=inputs["tag"][1:]) for a in profile["artifacts"]}
     result = attempt / "result"
     unpack_files(result_zip, result, names | {n + ".sha256" for n in names} | {
-        "provenance.json", "preflight-manifest.json",
+        "provenance.json", "preflight-manifest.json", "attestation-subjects.sha256",
     })
     provenance = read_json(result / "provenance.json")
     check(provenance["profile"] == inputs["app"] and provenance["request_id"] == inputs["request_id"])
@@ -532,6 +548,7 @@ def local_receive(path: Path) -> None:
     check({a["name"] for a in provenance["artifacts"]} == names)
     for artifact in provenance["artifacts"]:
         check(broker.sha256_file(result / artifact["name"]) == artifact["sha256"])
+    validate_returned_attestation_subjects(result, provenance["artifacts"], profile, inputs["tag"][1:])
     result.rename(work / "result")
     shutil.rmtree(attempt)
     (work / "return.identity").unlink()

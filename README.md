@@ -272,6 +272,9 @@ scripts/request-local.sh --resume .local-handoff-requests/local-REQUEST/state.js
 Review and approve `macos-signing` separately. Resume only after the run
 succeeds; the helper rechecks the private source tag, decrypts the results,
 verifies provenance and artifact hashes, and deletes the return identity.
+The exact result envelope also includes the broker-generated
+`attestation-subjects.sha256`; the helper checks it against verified artifact
+digests and the reviewed profile's attestation policy, rejecting unrelated files.
 Only then publish the returned assets to the **private** application release.
 This tool neither approves deployments nor publishes an application release.
 
