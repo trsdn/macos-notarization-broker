@@ -231,7 +231,7 @@ class ProfileTests(unittest.TestCase):
             {pin["identity"]: pin["state"]["revision"] for pin in lock["pins"]},
             {
                 "appupdater": "4826e7205ed0159347de84b19960f4ba0e535504",
-                "fluidaudio": "41540ea237350afe5117a082b5c28eda642d0612",
+                "fluidaudio": "87a39dfe4068fef0f1c69bfe704b2b3ef4fbc5bc",
                 "version": "3043fcd2a50375db76d89ff206a612471833d1c2",
             },
         )
