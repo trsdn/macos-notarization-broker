@@ -369,7 +369,11 @@ The signing recipient is review-controlled; the corresponding private identity
 is environment-only. Age release binaries are pinned by version and SHA-256.
 
 The signed outputs and provenance are encrypted back to the request's local
-recipient. No decrypted artifact, provisioning material, plaintext diagnostics,
+recipient. The exact receive allowlist includes `attestation-subjects.sha256`,
+whose contents must match the verified artifact hashes and the profile's
+reviewed attestation flags. This checksum metadata is not itself a GitHub
+attestation. Unrelated extra files remain rejected.
+No decrypted artifact, provisioning material, plaintext diagnostics,
 source or local `gh` token is stored in public artifacts/releases/logs. The
 remote wrapper suppresses Python and subprocess diagnostics at the file
 descriptor boundary; public messages are fixed status strings. The workflow

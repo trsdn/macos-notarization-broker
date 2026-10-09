@@ -133,6 +133,38 @@ class LocalHandoffTests(unittest.TestCase):
                 handoff.download_asset(base | change, self.root / "download.age")
             run.assert_not_called()
 
+    def test_returned_attestation_subjects_match_artifacts_and_reviewed_policy(self) -> None:
+        profile = {"artifacts": [
+            {"name": "App-v{version}.zip"},
+            {"name": "App-v{version}.dmg", "attest": False},
+        ]}
+        artifacts = [
+            {"name": "App-v1.0.0.zip", "sha256": "a" * 64, "attest": True},
+            {"name": "App-v1.0.0.dmg", "sha256": "b" * 64, "attest": False},
+        ]
+        result = handoff.private_directory(self.root / "result")
+        manifest = result / "attestation-subjects.sha256"
+        handoff.broker.write_attestation_subjects(manifest, artifacts)
+        handoff.validate_returned_attestation_subjects(result, artifacts, profile, "1.0.0")
+        for bad in (
+            "", "c" * 64 + "  App-v1.0.0.zip\n",
+            manifest.read_text() + "b" * 64 + "  App-v1.0.0.dmg\n",
+            "a" * 64 + "  unexpected.zip\n",
+        ):
+            with self.subTest(manifest=bad):
+                manifest.write_text(bad)
+                with self.assertRaises(ValueError):
+                    handoff.validate_returned_attestation_subjects(result, artifacts, profile, "1.0.0")
+        handoff.broker.write_attestation_subjects(manifest, artifacts)
+        for bad_artifacts in (
+            [artifacts[0]],
+            [artifacts[0], artifacts[0]],
+            [artifacts[0] | {"attest": False}, artifacts[1]],
+            [artifacts[0], artifacts[1] | {"attest": True}],
+        ):
+            with self.subTest(artifacts=bad_artifacts), self.assertRaises(ValueError):
+                handoff.validate_returned_attestation_subjects(result, bad_artifacts, profile, "1.0.0")
+
     def test_asset_digest_is_verified(self) -> None:
         asset = {"id": 10, "size": 3, "uploader": {"id": handoff.OWNER_ID},
                  "state": "uploaded", "digest": "sha256:" + "0" * 64}
@@ -270,9 +302,20 @@ raise SystemExit(local_handoff.remote("start"))
                 name = declaration["name"].format(version="2.0.0")
                 (output / name).write_bytes(b"synthetic signed artifact")
                 (output / (name + ".sha256")).write_text(handoff.broker.sha256_file(output / name))
-                artifacts.append({"name": name, "sha256": handoff.broker.sha256_file(output / name)})
+                artifacts.append({
+                    "name": name, "sha256": handoff.broker.sha256_file(output / name),
+                    "attest": declaration.get("attest", True),
+                })
+            profile = handoff.broker.get_profile("subvocal")
+            handoff.broker.write_attestation_subjects(output / "attestation-subjects.sha256", artifacts)
             handoff.write_json(output / "provenance.json", {
-                "profile": "subvocal", "request_id": values["request_id"], "source": {},
+                "profile": "subvocal", "request_id": values["request_id"],
+                "profile_digest": profile_digest,
+                "source": {
+                    "repository": profile["repository"], "repository_id": profile["repository_id"],
+                    "tag": values["tag"], "commit_sha": values["source_sha"],
+                    "ref_target_sha": values["source_ref_sha"], "tag_object_sha": None,
+                },
                 "broker": {"commit_sha": request["broker_commit"], "run_id": "123"},
                 "artifacts": artifacts,
             })
@@ -309,6 +352,29 @@ raise SystemExit(local_handoff.remote("start"))
             provenance = handoff.read_json(signing / "signed/provenance.json")
             self.assertEqual(provenance["source"]["verification"], "owner-attested-local-build")
             self.assertEqual(provenance["local_handoff"]["request"]["inputs"], values)
+            receiving = handoff.private_directory(self.root / "receiving")
+            (receiving / "return.identity").write_text("synthetic local identity")
+            handoff.write_json(receiving / "state.json", {
+                "inputs": values, "source": str(self.root / "source"),
+                "broker_commit": request["broker_commit"], "run_id": "123",
+            })
+            run = {
+                "event": "workflow_dispatch", "head_branch": "main", "head_sha": request["broker_commit"],
+                "run_attempt": 1, "actor": {"id": handoff.OWNER_ID},
+                "repository": {"id": handoff.REPOSITORY_ID}, "path": ".github/workflows/notarize-local.yml",
+                "status": "completed", "conclusion": "success",
+            }
+            def fake_download(run_id, name, destination):
+                self.assertEqual(run_id, "123")
+                handoff.pack_files(destination, {"result.age": signing / "outbound/result.age"})
+            with mock.patch.object(handoff, "source_attestation", return_value={
+                key: values[key] for key in ("source_sha", "source_ref_sha", "source_tag_object_sha")
+            }), mock.patch.object(handoff, "api", return_value=run), \
+                 mock.patch.object(handoff.age_tool, "install", return_value=Path("age")), \
+                 mock.patch.object(handoff, "download_run_artifact", side_effect=fake_download):
+                handoff.local_receive(receiving / "state.json")
+            self.assertFalse((receiving / "return.identity").exists())
+            self.assertTrue((receiving / "result/attestation-subjects.sha256").is_file())
 
     def test_signing_rejects_ciphertext_digest_before_decrypting(self) -> None:
         original_cwd = Path.cwd()
