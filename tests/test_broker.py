@@ -1570,6 +1570,110 @@ PREINSTALLED_TOOLS = {
 }
 
 
+class XcodeSelectionTests(unittest.TestCase):
+    def make_xcodes(self, root: Path, *names: str) -> None:
+        for name in names:
+            (root / name / "Contents" / "Developer").mkdir(parents=True)
+
+    def test_selects_the_newest_installed_xcode_of_the_requested_major(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.make_xcodes(
+                root,
+                "Xcode_16.4.app",
+                "Xcode_26.0.1.app",
+                "Xcode_26.2.app",
+                "Xcode_26.10.app",
+                "Xcode_260.app",
+                "Xcode_27.0.app",
+            )
+            (root / "Xcode.app" / "Contents" / "Developer").mkdir(parents=True)
+            self.assertEqual(
+                broker.find_xcode_developer_dir(26, root),
+                root / "Xcode_26.10.app" / "Contents" / "Developer",
+            )
+
+    def test_missing_requested_xcode_fails_instead_of_using_the_default(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.make_xcodes(root, "Xcode_16.4.app", "Xcode_27.0.app")
+            (root / "Xcode.app" / "Contents" / "Developer").mkdir(parents=True)
+            with self.assertRaisesRegex(broker.BrokerError, "No Xcode 26"):
+                broker.find_xcode_developer_dir(26, root)
+
+    def test_profile_policy_accepts_only_a_sane_major_on_swiftpm_profiles(self) -> None:
+        swiftpm = {"build_adapter": "openwritr-swiftpm", "xcode_major_version": 26}
+        broker.validate_xcode_major_policy("synthetic", swiftpm)
+        broker.validate_xcode_major_policy("synthetic", {"build_adapter": "md2loop-xcode"})
+        for bad in (True, "26", 26.5, 15, 100, None):
+            with self.subTest(value=bad), self.assertRaises(broker.BrokerError):
+                broker.validate_xcode_major_policy(
+                    "synthetic", {**swiftpm, "xcode_major_version": bad}
+                )
+        with self.assertRaises(broker.BrokerError):
+            broker.validate_xcode_major_policy(
+                "synthetic", {"build_adapter": "md2loop-xcode", "xcode_major_version": 26}
+            )
+
+    def test_only_openwritr_pins_an_xcode_major(self) -> None:
+        pinned = {
+            name: profile["xcode_major_version"]
+            for name, profile in broker.load_profiles().items()
+            if "xcode_major_version" in profile
+        }
+        self.assertEqual(pinned, {"openwritr": 26})
+
+    def test_link_guard_rejects_a_build_without_foundation_models(self) -> None:
+        executable = Path("/build/OpenWritr")
+        with_framework = subprocess.CompletedProcess(
+            [],
+            0,
+            "/build/OpenWritr:\n\t/System/Library/Frameworks/Foundation.framework/Foundation\n"
+            "\t/System/Library/Frameworks/FoundationModels.framework/FoundationModels (weak)\n",
+            "",
+        )
+        without_framework = subprocess.CompletedProcess(
+            [],
+            0,
+            "/build/OpenWritr:\n\t/System/Library/Frameworks/Foundation.framework/Foundation\n",
+            "",
+        )
+        with (
+            mock.patch.object(broker, "require_tools"),
+            mock.patch.object(broker, "run", return_value=with_framework) as run,
+        ):
+            broker.require_foundation_models_link(executable)
+        self.assertEqual(run.call_args.args[0], ["otool", "-L", str(executable)])
+        with (
+            mock.patch.object(broker, "require_tools"),
+            mock.patch.object(broker, "run", return_value=without_framework),
+            self.assertRaisesRegex(broker.BrokerError, "Apple Intelligence"),
+        ):
+            broker.require_foundation_models_link(executable)
+
+    def test_swift_build_runs_with_the_selected_developer_dir(self) -> None:
+        developer_dir = Path("/Applications/Xcode_26.3.app/Contents/Developer")
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary)
+            (source / "Package.resolved").write_text("{}", encoding="utf-8")
+            executable = source / "bin" / "OpenWritr"
+            executable.parent.mkdir()
+            executable.write_bytes(b"binary")
+            seen: list = []
+
+            def fake_run(command, **kwargs):  # type: ignore[no-untyped-def]
+                seen.append(kwargs.get("env"))
+                return subprocess.CompletedProcess(command, 0, f"{executable.parent}\n", "")
+
+            with mock.patch.object(broker, "run", side_effect=fake_run):
+                broker.swift_build(source, "OpenWritr", True, developer_dir)
+                broker.swift_build(source, "OpenWritr", True)
+        self.assertEqual(len(seen), 4)
+        for env in seen[:2]:
+            self.assertEqual(env["DEVELOPER_DIR"], str(developer_dir))
+        self.assertEqual(seen[2:], [None, None])
+
+
 class BuildAdapterTests(unittest.TestCase):
     def test_every_declared_adapter_has_a_dispatch_branch(self) -> None:
         # load_profiles() only checks the adapter against an allowlist. Without
@@ -1738,8 +1842,8 @@ class BuildAdapterTests(unittest.TestCase):
         return source
 
     def fake_openwritr_build(self, root: Path, calls: list):  # type: ignore[no-untyped-def]
-        def build(source, product, require_lock):  # type: ignore[no-untyped-def]
-            calls.append((product, require_lock))
+        def build(source, product, require_lock, developer_dir=None):  # type: ignore[no-untyped-def]
+            calls.append((product, require_lock, developer_dir))
             bin_dir = root / "bin"
             bundle = bin_dir / "AppUpdater_AppUpdater.bundle"
             bundle.mkdir(parents=True)
@@ -1758,11 +1862,20 @@ class BuildAdapterTests(unittest.TestCase):
             work = root / "work"
             work.mkdir()
             calls: list = []
-            with mock.patch.object(
-                broker, "swift_build", side_effect=self.fake_openwritr_build(root, calls)
+            xcode = Path("/Applications/Xcode_26.3.app/Contents/Developer")
+            with (
+                mock.patch.object(
+                    broker, "swift_build", side_effect=self.fake_openwritr_build(root, calls)
+                ),
+                mock.patch.object(
+                    broker, "find_xcode_developer_dir", return_value=xcode
+                ) as find_xcode,
+                mock.patch.object(broker, "require_foundation_models_link") as link_guard,
             ):
                 app = broker.assemble_openwritr(source, work, profile, "1.7.0")
-            self.assertEqual(calls, [("OpenWritr", True)])
+            find_xcode.assert_called_once_with(26)
+            link_guard.assert_called_once_with(root / "bin" / "OpenWritr")
+            self.assertEqual(calls, [("OpenWritr", True, xcode)])
             resources = app / "Contents/Resources"
             self.assertTrue((resources / "AppIcon.icns").is_file())
             self.assertTrue(
@@ -1808,17 +1921,50 @@ class BuildAdapterTests(unittest.TestCase):
             work = root / "work"
             work.mkdir()
 
-            def mutate_lock(source_arg, product, require_lock):  # type: ignore[no-untyped-def]
+            def mutate_lock(source_arg, product, require_lock, developer_dir=None):  # type: ignore[no-untyped-def]
                 (source_arg / "Package.resolved").write_text(
                     '{"pins": [], "version": 3}', encoding="utf-8"
                 )
                 return self.fake_openwritr_build(root, [])(
-                    source_arg, product, require_lock
+                    source_arg, product, require_lock, developer_dir
                 )
 
-            with mock.patch.object(broker, "swift_build", side_effect=mutate_lock):
-                with self.assertRaises(broker.BrokerError):
+            with (
+                mock.patch.object(broker, "swift_build", side_effect=mutate_lock),
+                mock.patch.object(
+                    broker, "find_xcode_developer_dir", return_value=Path("/xcode26")
+                ),
+                mock.patch.object(broker, "require_foundation_models_link") as link_guard,
+            ):
+                with self.assertRaisesRegex(broker.BrokerError, "changed during compilation"):
                     broker.assemble_openwritr(source, work, profile, "1.7.0")
+            link_guard.assert_not_called()
+
+    def test_openwritr_requires_xcode_26_and_a_foundation_models_link(self) -> None:
+        profile = broker.get_profile("openwritr")
+        self.assertEqual(profile["xcode_major_version"], 26)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            lock = broker.safe_profile_path(profile["dependency_lock"]).read_text()
+            source = self.openwritr_source(root, profile, lock)
+            work = root / "work"
+            work.mkdir()
+            with (
+                mock.patch.object(
+                    broker, "swift_build", side_effect=self.fake_openwritr_build(root, [])
+                ),
+                mock.patch.object(
+                    broker, "find_xcode_developer_dir", return_value=Path("/xcode26")
+                ),
+                mock.patch.object(
+                    broker,
+                    "require_foundation_models_link",
+                    side_effect=broker.BrokerError("compiled without FoundationModels"),
+                ),
+            ):
+                with self.assertRaisesRegex(broker.BrokerError, "FoundationModels"):
+                    broker.assemble_openwritr(source, work, profile, "1.7.0")
+            self.assertFalse((work / "OpenWritr.app").exists())
 
     def fake_swift_build(self, root: Path, profile: dict, calls: list):  # type: ignore[no-untyped-def]
         def build(source, product, require_lock):  # type: ignore[no-untyped-def]
