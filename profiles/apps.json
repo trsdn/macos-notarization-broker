@@ -31,6 +31,7 @@
       "repository": "trsdn/OpenWritr",
       "repository_id": 1165782217,
       "build_adapter": "openwritr-swiftpm",
+      "xcode_major_version": 26,
       "dependency_lock": "locks/openwritr-Package.resolved",
       "bundle_name": "OpenWritr.app",
       "bundle_identifier": "com.openwritr.app",

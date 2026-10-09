@@ -220,6 +220,7 @@ def load_profiles() -> dict[str, Any]:
             fail(f"Profile {name} has an invalid Apple Team ID.")
         validate_nested_executable_policy(name, profile)
         validate_nested_resource_bundle_policy(name, profile)
+        validate_xcode_major_policy(name, profile)
         validate_app_icon_policy(name, profile)
         if "required_resources" in profile:
             validate_resource_file_policy(name, profile["required_resources"], bundle_relative=True)
@@ -458,6 +459,51 @@ def validate_nested_resource_bundle_policy(name: str, profile: dict[str, Any]) -
             if not path.endswith(".bundle"):
                 fail(f"Profile {name} exact resource files require a .bundle path.")
             validate_resource_file_policy(name, spec["files"])
+
+
+def validate_xcode_major_policy(name: str, profile: dict[str, Any]) -> None:
+    """Validate the optional Xcode major version a SwiftPM profile must build with.
+
+    The runner's default Xcode can lag the SDK an app needs. A build against an older SDK
+    compiles `#if canImport(...)` code out of the app without any error, so a profile that
+    depends on a newer framework pins the major version of an Xcode the runner image carries.
+    """
+    if "xcode_major_version" not in profile:
+        return
+    major = profile["xcode_major_version"]
+    if isinstance(major, bool) or not isinstance(major, int) or not 16 <= major <= 99:
+        fail(f"Profile {name} must declare xcode_major_version as an integer from 16 to 99.")
+    if not profile["build_adapter"].endswith("-swiftpm"):
+        fail(f"Profile {name} may pin xcode_major_version only for a SwiftPM adapter.")
+
+
+def find_xcode_developer_dir(major: int, applications: Path = Path("/Applications")) -> Path:
+    """The newest installed Xcode of exactly this major version, as a DEVELOPER_DIR."""
+    candidates: list[tuple[tuple[int, ...], Path]] = []
+    for app in applications.glob(f"Xcode_{major}*.app"):
+        match = re.fullmatch(rf"Xcode_({major}(?:\.\d+)*)\.app", app.name)
+        developer_dir = app / "Contents" / "Developer"
+        if match and developer_dir.is_dir():
+            candidates.append((tuple(int(part) for part in match.group(1).split(".")), developer_dir))
+    if not candidates:
+        fail(f"No Xcode {major} is installed under {applications}.")
+    return max(candidates)[1]
+
+
+def require_foundation_models_link(executable: Path) -> None:
+    """Fail when an OpenWritr build was compiled without the FoundationModels SDK.
+
+    OpenWritr guards Apple Intelligence with `#if canImport(FoundationModels)`. Built against an
+    SDK older than macOS 26 it compiles without error but ships a build that can never offer
+    Apple Intelligence, so the linked frameworks are checked instead of trusting the toolchain.
+    """
+    require_tools(["otool"])
+    linked = run(["otool", "-L", str(executable)], capture=True, display=False).stdout
+    if "FoundationModels.framework" not in linked:
+        fail(
+            "The OpenWritr executable does not link FoundationModels, so Apple Intelligence "
+            "was compiled out. Build with Xcode 26 or later."
+        )
 
 
 def check_app_icon_spelling(label: str, declared: Any) -> str:
@@ -995,7 +1041,9 @@ def build_md2loop(source: Path, work: Path, profile: dict[str, Any], version: st
     return derived_data / "Build" / "Products" / "Release" / profile["bundle_name"]
 
 
-def swift_build(source: Path, product: str, require_lock: bool) -> Path:
+def swift_build(
+    source: Path, product: str, require_lock: bool, developer_dir: Path | None = None
+) -> Path:
     command = [
         "swift",
         "build",
@@ -1007,8 +1055,9 @@ def swift_build(source: Path, product: str, require_lock: bool) -> Path:
     if require_lock:
         ensure_source_file(source, "Package.resolved")
         command.append("--only-use-versions-from-resolved-file")
-    run(command + ["--product", product])
-    result = run(command + ["--show-bin-path"], capture=True)
+    env = {**os.environ, "DEVELOPER_DIR": str(developer_dir)} if developer_dir else None
+    run(command + ["--product", product], env=env)
+    result = run(command + ["--show-bin-path"], capture=True, env=env)
     bin_path = Path(result.stdout.strip())
     executable = bin_path / product
     if not executable.is_file():
@@ -1023,9 +1072,15 @@ def assemble_openwritr(
     lock = ensure_source_file(source, "Package.resolved")
     if json.loads(lock.read_text()) != json.loads(expected_lock.read_text()):
         fail("OpenWritr Package.resolved differs from the reviewed broker dependency lock.")
-    executable = swift_build(source, "OpenWritr", require_lock=True)
+    developer_dir = (
+        find_xcode_developer_dir(profile["xcode_major_version"])
+        if "xcode_major_version" in profile
+        else None
+    )
+    executable = swift_build(source, "OpenWritr", require_lock=True, developer_dir=developer_dir)
     if json.loads(lock.read_text()) != json.loads(expected_lock.read_text()):
         fail("OpenWritr dependency lock changed during compilation.")
+    require_foundation_models_link(executable)
     app = work / profile["bundle_name"]
     macos = app / "Contents" / "MacOS"
     resources = app / "Contents" / "Resources"

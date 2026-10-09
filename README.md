@@ -37,6 +37,13 @@ versioned DMG and updater alias are not. An installed OpenWritr version can
 crash while checking an update if an attestation exists for that DMG digest
 ([trsdn/OpenWritr#31](https://github.com/trsdn/OpenWritr/issues/31)).
 
+A SwiftPM profile may set `xcode_major_version` when the app needs a newer SDK than the
+runner's default Xcode. The build then runs with the newest installed Xcode of exactly that
+major version and fails if none is installed, instead of silently using the default. OpenWritr
+uses this to build against the macOS 26 SDK: with an older SDK its Apple Intelligence code is
+compiled out without any error, so the OpenWritr adapter also fails the build unless the
+executable links `FoundationModels`.
+
 See [SECURITY.md](SECURITY.md) for the full model and required repository
 rules.
 
