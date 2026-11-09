@@ -1340,10 +1340,6 @@ def assemble_subvocal(source: Path, work: Path, profile: dict[str, Any]) -> Path
         # Preserve links and permissions so preflight rejects unsafe content instead
         # of silently following links or normalizing executable resources.
         shutil.copytree(bundle, app / spec["path"], symlinks=True)
-    shutil.copy2(
-        ensure_source_file(package, ".build/checkouts/design-system/LICENSE"),
-        resources / "InstrumentWorkshopKit-LICENSE",
-    )
     make_resource_bundles_writable(app, profile)
     return app
 

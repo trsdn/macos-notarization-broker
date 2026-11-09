@@ -200,22 +200,19 @@ and packaging contract is:
   `profiles/locks/subvocal-Package.resolved`, including immutable revisions.
   SwiftPM uses `--only-use-versions-from-resolved-file`; a lock change requires
   broker review, even for the branch-based OutlookAX dependency.
-  InstrumentWorkshopKit (`design-system`) is pinned to 1.5.1 at
-  `9f58bdba169bc0013dd8b9ec80b85f65325ac678`; the other six pins are unchanged.
+  FluidAudio is pinned to 0.17.7 at
+  `503b4bd1bbf7220882de39fe8ae6716aae4132da`. The removed
+  InstrumentWorkshopKit (`design-system`) dependency is no longer authorized;
+  the other five pins are unchanged.
 - Source plists at `Subvocal/Sources/Subvocal/Info.plist` and
   `Subvocal/Sources/SubvocalLightApp/Info.plist` already carry the release version
   (both version keys), flavor identity, privacy descriptions, and `15.0`
   deployment target. Full retains `LSUIElement=true`, Light `false`.
 - The icon is `Subvocal/Sources/Subvocal/Assets/AppIcon.icns`. Both flavors
   include exactly the declared SwiftPM resource bundles
-  `Subvocal_SubvocalKit.bundle`, `PLCrashReporter_CrashReporter.bundle`, and
-  `InstrumentWorkshopKit_InstrumentWorkshopKit.bundle` under `Contents/Resources`.
-  The kit bundle contains only `Resources/canonical-workflow-fixture.json`,
-  pinned by SHA-256, with no `Info.plist`. Extra files or directories are rejected.
-  `Contents/Resources/InstrumentWorkshopKit-LICENSE` is also required and pinned
-  by SHA-256 to the dependency's root `LICENSE`. The adapter copies that license
-  from `.build/checkouts/design-system/LICENSE`. No nested executable or
-  framework is authorized.
+  `Subvocal_SubvocalKit.bundle` and `PLCrashReporter_CrashReporter.bundle`
+  under `Contents/Resources`. InstrumentWorkshopKit resources and its license
+  are no longer required. No nested executable or framework is authorized.
 - Signing grants only microphone input. No provisioning profile or
   `keychain-access-groups` entitlement is requested. The
   `SubvocalArtifactKeyAccessGroup` Info.plist key is rejected in preflight;
@@ -254,11 +251,10 @@ scripts/request-local.sh subvocal-light v2.0.0 \
   --app-bundle "/path/to/private-checkout/dist/Subvocal Light.app"
 ```
 
-The helper validates each unsigned app locally before dispatch. All three declared
+The helper validates each unsigned app locally before dispatch. Both declared
 resource bundles must be packaged; a binary-only app is rejected. It stages a
 private copy and adds owner-write permission to resource files/directories
-(SwiftPM's read-only privacy manifest otherwise prevents `xattr` sanitation),
-and to the required license file.
+(SwiftPM's read-only privacy manifest otherwise prevents `xattr` sanitation).
 Executable bits are preserved and still rejected; the supplied app is unchanged.
 It creates
 private local state under `.local-handoff-requests/`, with a one-request return
