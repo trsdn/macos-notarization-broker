@@ -108,8 +108,8 @@ the last job.
   adapter for a regular windowed app whose `Info.plist` lives at
   `Config/Info.plist` rather than `Sources/<product>/Info.plist`;
   `assemble_openwritr`/`assemble_openswitchr` are simpler, dependency-light
-  variants; `subvocal`/`subvocal-light` add InstrumentWorkshopKit resource
-  verification with per-file digests.
+  variants; `subvocal`/`subvocal-light` pin their SwiftPM dependency lock and
+  require their app and crash-reporter resource bundles.
 - **make** — `openconnct`, Makefile-driven; AppUpdater is linked in as
   object files, so it has no resource bundle to declare.
 
